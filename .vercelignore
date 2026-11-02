@@ -1,0 +1,9 @@
+# Never upload local secrets or tooling to Vercel. The app only needs src/, public/, api/, shared/ and the build config.
+.env
+.env.*
+!.env.example
+supabase/
+test/
+.github/
+.gstack/
+dist/
