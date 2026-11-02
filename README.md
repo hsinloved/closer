@@ -2,7 +2,10 @@
 
 **A card game for two.** Questions to get to know each other, play a little, and slowly go deeper.
 
-▶ **Play now:** https://hsinloved.github.io/closer/
+**Two ways to play.** Answer one card a day from your own phones: answers stay sealed until you've both
+written, and the other gets a notification. Or sit together and play the in-person game at `/together.html`.
+
+Setup for the two-player version: see [SETUP.md](SETUP.md).
 
 Made for a Taiwanese–German couple, so there's a whole level about the space between two cultures.
 
@@ -39,15 +42,14 @@ There's only one rule: be honest.
 ## Good to know
 
 - Works on phones and laptops. Add it to your home screen to use it like an app.
-- Progress, names and saved cards stay in your browser. Nothing is sent anywhere.
+- In-person mode keeps everything in your browser. The two-player app stores your answers in your own Supabase project, readable only by your two accounts.
 - It's built for one device you share. Each device keeps its own game.
-- It's a single `index.html` file, with no build step and no dependencies.
+- The two-player app is Vite + Preact, with Supabase for sign-in and data, and Vercel for hosting and notifications.
+- The in-person game is still a single self-contained file: `public/together.html`.
 
 ## Host your own copy
 
-1. Fork or download this repo.
-2. Go to **Settings → Pages → Deploy from a branch**, choose `main` and `/ (root)`, and save.
-3. After about a minute it's live at `https://<username>.github.io/closer/`.
+Fork the repo and follow [SETUP.md](SETUP.md): a free Supabase project, a Vercel project, and two phone settings.
 
 ---
 
