@@ -24,18 +24,37 @@ function Frame({ children, right }) {
 
 // ---------------------------------------------------------------- sign in: email, then the six-digit code
 // A code rather than a link, because a link opens Safari, not the home-screen app, and would sign in the wrong place.
+// Remember that a code is on its way, so leaving to check email (and coming back to a reloaded page, or tapping
+// the link again) lands on the code box rather than the email box. Codes last an hour, and so does this.
+const PENDING_KEY = "closer:pending-sign-in", PENDING_MS = 60 * 60 * 1000;
+function readPending() {
+  try {
+    const p = JSON.parse(localStorage.getItem(PENDING_KEY) || "null");
+    return p && typeof p.email === "string" && Date.now() - p.at < PENDING_MS ? p.email : "";
+  } catch { return ""; }
+}
+function writePending(email) {
+  try { email ? localStorage.setItem(PENDING_KEY, JSON.stringify({ email, at: Date.now() })) : localStorage.removeItem(PENDING_KEY); } catch {}
+}
+
 function SignIn() {
-  const [email, setEmail] = useState(""), [code, setCode] = useState(""), [sent, setSent] = useState(false);
+  const pending = readPending();
+  const [email, setEmail] = useState(pending), [code, setCode] = useState(""), [sent, setSent] = useState(Boolean(pending));
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const send = async e => {
     e.preventDefault(); setBusy(true); setError("");
     const { error } = await supabase.auth.signInWithOtp({ email: email.trim(), options: { shouldCreateUser: true } });
-    setBusy(false); if (error) setError(error.message); else setSent(true);
+    setBusy(false); if (error) setError(error.message); else { writePending(email.trim()); setSent(true); }
   };
   const verify = async e => {
     e.preventDefault(); setBusy(true); setError("");
     const { error } = await supabase.auth.verifyOtp({ email: email.trim(), token: code.trim(), type: "email" });
-    setBusy(false); if (error) setError(error.message);
+    setBusy(false); if (error) setError(error.message); else writePending("");
+  };
+  const resend = async () => {
+    setBusy(true); setError(""); setCode("");
+    const { error } = await supabase.auth.signInWithOtp({ email: email.trim(), options: { shouldCreateUser: true } });
+    setBusy(false); if (error) setError(error.message); else writePending(email.trim());
   };
   return <Frame><div class="center">
     <p class="card-q">One question a day. Answers stay sealed until you've both written.</p>
@@ -45,7 +64,9 @@ function SignIn() {
     </form> : <form onSubmit={verify} class="page">
       <div class="field"><label for="code">The code we emailed to {email}</label><input id="code" class="input code" inputmode="numeric" autocomplete="one-time-code" maxLength={6} required value={code} onInput={e => setCode(e.target.value.replace(/\D/g, ""))} /></div>
       <button class="btn btn-primary btn-block" disabled={busy || code.length < 6}>{busy ? "Checking…" : "Sign in"}</button>
-      <button type="button" class="btn btn-ghost" onClick={() => { setSent(false); setCode(""); }}>Use a different email</button>
+      <p class="muted">Check your email, then come back here. No need to open the link again.</p>
+      <button type="button" class="btn btn-ghost" disabled={busy} onClick={resend}>Send a new code</button>
+      <button type="button" class="btn btn-ghost" onClick={() => { writePending(""); setSent(false); setCode(""); }}>Use a different email</button>
     </form>}
     {error && <p class="error" role="alert">{error}</p>}
   </div></Frame>;
@@ -109,7 +130,8 @@ function Pair({ onDone }) {
   const [error, setError] = useState(""), [busy, setBusy] = useState(false);
   const run = async fn => { setBusy(true); setError(""); const { error } = await fn(); setBusy(false); if (error) setError(error.message); else onDone(); };
   const create = e => { e.preventDefault(); run(() => supabase.rpc("create_couple", { p_name: name })); };
-  const join = e => { e.preventDefault(); run(() => supabase.rpc("join_couple", { p_code: code, p_name: name })); };
+  // Joining completes the pair, so let the first of you know (their phone, if they've turned notifications on).
+  const join = e => { e.preventDefault(); run(async () => { const r = await supabase.rpc("join_couple", { p_code: code, p_name: name }); if (!r.error) notify("joined"); return r; }); };
   return <Frame><div class="center">
     <div class="field"><label for="name">What should Closer call you?</label><input id="name" class="input" autocomplete="given-name" maxLength={40} value={name} onInput={e => setName(e.target.value)} /></div>
     {mode === "start" && <>
@@ -275,12 +297,24 @@ function Settings({ me, data, partner, reload }) {
     setBusy(false);
   };
   const turnOff = async () => { await disablePush(); setPush(await pushState()); setMsg("Notifications are off on this phone."); };
+  // Ends the pair for both of you, cards and answers included, so whoever pairs next starts with a clean slate.
+  const resetPairing = async () => {
+    const warning = partner
+      ? `Reset your pairing with ${partner.name}?\n\nThis unpairs you both and deletes every card and answer you've shared. It can't be undone.`
+      : "Reset your pairing? Your invite code will stop working and you can start again.";
+    if (!window.confirm(warning)) return;
+    setBusy(true); setMsg("");
+    const { error } = await supabase.rpc("reset_couple");
+    setBusy(false);
+    if (error) setMsg(error.message); else reload();
+  };
 
   return <div class="page">
     <section class="panel"><h2>You</h2>
       <div class="field"><label for="me">Your name</label><input id="me" class="input" maxLength={40} value={name} onInput={e => setName(e.target.value)} onBlur={saveName} /></div>
       {partner ? <p class="note">Paired with <span class="hand" style="font-size:20px;color:var(--accent-ink)">{partner.name}</span>.</p>
         : <p class="note">Waiting for your partner. Their code: <b>{couple.invite_code}</b></p>}
+      <button class="btn btn-ghost" disabled={busy} onClick={resetPairing}>Reset pairing</button>
     </section>
 
     <section class="panel"><h2>Daily card</h2>
