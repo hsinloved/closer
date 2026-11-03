@@ -24,18 +24,37 @@ function Frame({ children, right }) {
 
 // ---------------------------------------------------------------- sign in: email, then the six-digit code
 // A code rather than a link, because a link opens Safari, not the home-screen app, and would sign in the wrong place.
+// Remember that a code is on its way, so leaving to check email (and coming back to a reloaded page, or tapping
+// the link again) lands on the code box rather than the email box. Codes last an hour, and so does this.
+const PENDING_KEY = "closer:pending-sign-in", PENDING_MS = 60 * 60 * 1000;
+function readPending() {
+  try {
+    const p = JSON.parse(localStorage.getItem(PENDING_KEY) || "null");
+    return p && typeof p.email === "string" && Date.now() - p.at < PENDING_MS ? p.email : "";
+  } catch { return ""; }
+}
+function writePending(email) {
+  try { email ? localStorage.setItem(PENDING_KEY, JSON.stringify({ email, at: Date.now() })) : localStorage.removeItem(PENDING_KEY); } catch {}
+}
+
 function SignIn() {
-  const [email, setEmail] = useState(""), [code, setCode] = useState(""), [sent, setSent] = useState(false);
+  const pending = readPending();
+  const [email, setEmail] = useState(pending), [code, setCode] = useState(""), [sent, setSent] = useState(Boolean(pending));
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const send = async e => {
     e.preventDefault(); setBusy(true); setError("");
     const { error } = await supabase.auth.signInWithOtp({ email: email.trim(), options: { shouldCreateUser: true } });
-    setBusy(false); if (error) setError(error.message); else setSent(true);
+    setBusy(false); if (error) setError(error.message); else { writePending(email.trim()); setSent(true); }
   };
   const verify = async e => {
     e.preventDefault(); setBusy(true); setError("");
     const { error } = await supabase.auth.verifyOtp({ email: email.trim(), token: code.trim(), type: "email" });
-    setBusy(false); if (error) setError(error.message);
+    setBusy(false); if (error) setError(error.message); else writePending("");
+  };
+  const resend = async () => {
+    setBusy(true); setError(""); setCode("");
+    const { error } = await supabase.auth.signInWithOtp({ email: email.trim(), options: { shouldCreateUser: true } });
+    setBusy(false); if (error) setError(error.message); else writePending(email.trim());
   };
   return <Frame><div class="center">
     <p class="card-q">One question a day. Answers stay sealed until you've both written.</p>
@@ -45,7 +64,9 @@ function SignIn() {
     </form> : <form onSubmit={verify} class="page">
       <div class="field"><label for="code">The code we emailed to {email}</label><input id="code" class="input code" inputmode="numeric" autocomplete="one-time-code" maxLength={6} required value={code} onInput={e => setCode(e.target.value.replace(/\D/g, ""))} /></div>
       <button class="btn btn-primary btn-block" disabled={busy || code.length < 6}>{busy ? "Checking…" : "Sign in"}</button>
-      <button type="button" class="btn btn-ghost" onClick={() => { setSent(false); setCode(""); }}>Use a different email</button>
+      <p class="muted">Check your email, then come back here. No need to open the link again.</p>
+      <button type="button" class="btn btn-ghost" disabled={busy} onClick={resend}>Send a new code</button>
+      <button type="button" class="btn btn-ghost" onClick={() => { writePending(""); setSent(false); setCode(""); }}>Use a different email</button>
     </form>}
     {error && <p class="error" role="alert">{error}</p>}
   </div></Frame>;
