@@ -297,12 +297,24 @@ function Settings({ me, data, partner, reload }) {
     setBusy(false);
   };
   const turnOff = async () => { await disablePush(); setPush(await pushState()); setMsg("Notifications are off on this phone."); };
+  // Ends the pair for both of you, cards and answers included, so whoever pairs next starts with a clean slate.
+  const resetPairing = async () => {
+    const warning = partner
+      ? `Reset your pairing with ${partner.name}?\n\nThis unpairs you both and deletes every card and answer you've shared. It can't be undone.`
+      : "Reset your pairing? Your invite code will stop working and you can start again.";
+    if (!window.confirm(warning)) return;
+    setBusy(true); setMsg("");
+    const { error } = await supabase.rpc("reset_couple");
+    setBusy(false);
+    if (error) setMsg(error.message); else reload();
+  };
 
   return <div class="page">
     <section class="panel"><h2>You</h2>
       <div class="field"><label for="me">Your name</label><input id="me" class="input" maxLength={40} value={name} onInput={e => setName(e.target.value)} onBlur={saveName} /></div>
       {partner ? <p class="note">Paired with <span class="hand" style="font-size:20px;color:var(--accent-ink)">{partner.name}</span>.</p>
         : <p class="note">Waiting for your partner. Their code: <b>{couple.invite_code}</b></p>}
+      <button class="btn btn-ghost" disabled={busy} onClick={resetPairing}>Reset pairing</button>
     </section>
 
     <section class="panel"><h2>Daily card</h2>

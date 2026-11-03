@@ -152,4 +152,39 @@ select pg_temp.as_user(:B);
 select pg_temp.check((select count(*) = 0 from public.push_subscriptions), 'devices are private to their owner');
 reset role;
 
+-- Reset pairing ---------------------------------------------------------------
+-- X (Eve, alone in her own couple) cannot touch A and B's pair; resetting only ever removes your own.
+select pg_temp.as_user(:X);
+select public.reset_couple();
+select pg_temp.check((select count(*) = 0 from public.members), 'reset removes your own couple');
+reset role;
+select pg_temp.check((select count(*) = 1 from public.couples), 'a reset leaves other couples alone');
+select pg_temp.check((select count(*) = 2 from public.members), 'the other couple keeps both members');
+select pg_temp.as_user(:X);
+do $$ begin
+  perform public.reset_couple();
+  raise exception 'FAILED: reset without a couple';
+exception when others then
+  if sqlerrm like 'FAILED%' then raise; end if;
+  raise notice 'ok: nothing to reset when unpaired';
+end $$;
+reset role;
+select pg_temp.as_user(null);
+do $$ begin
+  perform public.reset_couple();
+  raise exception 'FAILED: anon reset';
+exception when insufficient_privilege then raise notice 'ok: signed-out visitors cannot reset';
+end $$;
+reset role;
+select pg_temp.as_user(:B);
+select public.reset_couple();
+select pg_temp.check((select count(*) = 0 from public.members), 'after a reset you are unpaired');
+reset role;
+select pg_temp.check((select count(*) = 0 from public.couples) and (select count(*) = 0 from public.rounds)
+  and (select count(*) = 0 from public.answers), 'a reset removes the pair, its cards and its answers for both');
+select pg_temp.as_user(:A);
+select public.create_couple('Celeste') is not null as repaired \gset
+select pg_temp.check((select count(*) = 1 from public.members), 'you can pair again after a reset');
+reset role;
+
 select 'ALL RLS CHECKS PASSED' as result;
