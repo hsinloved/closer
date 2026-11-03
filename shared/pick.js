@@ -20,4 +20,7 @@ export function localDay(timeZone, now = new Date()) {
   return { day: `${parts.year}-${parts.month}-${parts.day}`, hour: Number(parts.hour) };
 }
 
-export const cardText = r => (Q[r.lv] || [])[r.idx] || "";
+// Deck cards you've had, as "lv:idx" keys for pickCard. Questions you wrote for each other aren't deck cards.
+export const usedKeys = rounds => rounds.filter(r => r.idx != null).map(r => r.lv + ":" + r.idx);
+
+export const cardText = r => r.body || (Q[r.lv] || [])[r.idx] || "";

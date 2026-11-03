@@ -32,6 +32,15 @@ export async function pushTo(db, userIds, message) {
   return { sent: results.filter(r => r.status === "fulfilled").length, failed: results.filter(r => r.status === "rejected").length };
 }
 
+// The daily card's notification for one of you. A question one of you wrote says who it's from; its author hears it was picked.
+export function dailyMessage(round, members, to) {
+  const tag = `day-${round.day}`, url = "/";
+  if (!round.asked_by) return { title: "Today's card is here", body: "Open Closer to see it.", tag, url };
+  if (round.asked_by === to) return { title: "Your question is today's card", body: "Open Closer to answer it too.", tag, url };
+  const asker = members.find(m => m.user_id === round.asked_by)?.name || "your partner";
+  return { title: `Today's card is from ${asker}`, body: `Open Closer to see what ${asker} asked.`, tag, url };
+}
+
 export function json(res, status, body) {
   res.statusCode = status;
   res.setHeader("content-type", "application/json");

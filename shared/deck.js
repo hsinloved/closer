@@ -328,9 +328,9 @@ const THEMES = [
 ];
 const POOL = { know: ["discs", "tulips", "sprig", "star", "confetti", "gift"], play: ["confetti", "star", "hearts", "discs", "tulips"], world: ["mountains", "bowl", "bubbles", "house", "tulips", "tree"], deep: ["discs", "moon", "drops", "eye", "sprig"] };
 const MIXES = { house: ["house", "sun", "discs", "house", "mountains", "bowl"], tree: ["tree", "sprig", "discs", "tree", "hearts"] };
-function motifFor(lv, idx, R) {
+function motifFor(lv, idx, R, own) {
   if (lv === "final") return "hearts";
-  const text = ((Q[lv] || [])[idx] || "").toLowerCase(), hit = THEMES.find(([re]) => re.test(text)), pool = POOL[lv] || POOL.know;
+  const text = (own ?? (Q[lv] || [])[idx] ?? "").toLowerCase(), hit = THEMES.find(([re]) => re.test(text)), pool = POOL[lv] || POOL.know;
   if (!hit) return pool[hash(lv + idx) % pool.length];
   // Home and family come up so often that the same picture would repeat; let some of those cards borrow a related shape.
   const mix = MIXES[hit[1]];
@@ -355,7 +355,7 @@ function cardArt(lv, idx, opts) {
       `<path d="${tf(U[R() < 0.5 ? "sparkle" : "star"], dcx + (R() < 0.5 ? -1 : 1) * (95 + R() * 20), 40 + R() * 30, 22 + R() * 8, R() * 20 - 10, false, 1)}" fill="url(#creamF)"/>` +
       "";
   } else {
-    const name = motifFor(lv, idx, R), m = MOTIFS[name](R, lv);
+    const name = motifFor(lv, idx, R, o.text), m = MOTIFS[name](R, lv);
     const s = 92 * (0.94 + R() * 0.1), cx = W / 2 + (R() - 0.5) * 30, cy = H / 2 + (R() - 0.5) * 10, rot = (R() - 0.5) * 12, mx = name !== "notes" && name !== "bubbles" && R() < 0.5;
     const swap = R() < 0.3 && name !== "final", col = k => swap ? ({ brick: "teal", teal: "brick" }[k] || k) : k;
     const ps = m.p.map(q => ({ k: col(q.k), d: tf(q.d, cx, cy, s, rot, mx, 1) }));
@@ -404,6 +404,8 @@ function pipArt() {
 }
 const artCache = new Map();
 const artFor = (lv, idx) => { const k = lv + ":" + idx; if (!artCache.has(k)) artCache.set(k, cardArt(lv, idx, { ground: "none" })); return artCache.get(k); };
+// A question you wrote: its own seed, and its picture picked from what it asks, like a deck card's.
+const customArt = (lv, seed, text) => cardArt(lv, 1000 + hash(String(seed)) % 9000, { ground: "none", text });
 const BACK_ART = backArt(), PIP_ART = pipArt();
 
-export { Q, META, JORDER, FINAL_TEXT, FINAL, WILD, PAL, cardArt, artFor, motifFor, BACK_ART, PIP_ART, hash };
+export { Q, META, JORDER, FINAL_TEXT, FINAL, WILD, PAL, cardArt, artFor, customArt, motifFor, BACK_ART, PIP_ART, hash };

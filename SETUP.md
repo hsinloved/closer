@@ -7,7 +7,7 @@ About 20 minutes, once. You need the Supabase project ("closer") and a Vercel ac
 1. Supabase → your **closer** project → **SQL Editor** → New query. Paste all of
    `supabase/migrations/0001_closer.sql` and **Run**. It creates the tables and the privacy rules.
    Then do the same, one at a time and in order, for the other files in `supabase/migrations/`
-   (`0002_…`, `0003_…`). When a new one appears later, run just that one.
+   (`0002_…`, `0003_…`, `0004_…`). When a new one appears later, run just that one.
 2. **Authentication → Sign In / Providers → Email**: leave Email on. Turn **Confirm email** on.
 3. **Authentication → Emails → Magic Link** template: make sure the body shows the code, for example
 

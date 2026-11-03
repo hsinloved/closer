@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "preact/hooks";
 import { supabase, configured, notify } from "./supabase.js";
 import { pushSupported, pushState, enablePush, disablePush, isStandalone, isIOS } from "./push.js";
-import { META, WILD, artFor } from "../shared/deck.js";
-import { pickCard, localDay, cardText } from "../shared/pick.js";
+import { META, WILD, artFor, customArt, BACK_ART } from "../shared/deck.js";
+import { pickCard, localDay, cardText, usedKeys } from "../shared/pick.js";
 
 export function App() {
   const [session, setSession] = useState(undefined);
@@ -78,13 +78,17 @@ function useCouple(me) {
   const load = useCallback(async () => {
     const { data: member } = await supabase.from("members").select("couple_id, name").eq("user_id", me.id).maybeSingle();
     if (!member) return setState({ loading: false, member: null });
-    const [couple, members, rounds, answers] = await Promise.all([
+    const [couple, members, rounds, answers, questions, pending] = await Promise.all([
       supabase.from("couples").select("*").eq("id", member.couple_id).single(),
       supabase.from("members").select("user_id, name").eq("couple_id", member.couple_id),
       supabase.from("rounds").select("*").eq("couple_id", member.couple_id).order("created_at", { ascending: false }),
-      supabase.from("answers").select("*")
+      supabase.from("answers").select("*"),
+      // Your own waiting questions; of your partner's, only how many.
+      supabase.from("questions").select("*").order("created_at"),
+      supabase.rpc("pending_questions")
     ]);
-    setState({ loading: false, member, couple: couple.data, members: members.data || [], rounds: rounds.data || [], answers: answers.data || [] });
+    setState({ loading: false, member, couple: couple.data, members: members.data || [], rounds: rounds.data || [], answers: answers.data || [],
+      questions: questions.data || [], pending: pending.data || [] });
   }, [me.id]);
 
   useEffect(() => { load(); }, [load]);
@@ -95,6 +99,7 @@ function useCouple(me) {
       .on("postgres_changes", { event: "*", schema: "public", table: "rounds", filter: `couple_id=eq.${coupleId}` }, load)
       .on("postgres_changes", { event: "*", schema: "public", table: "answers" }, load)
       .on("postgres_changes", { event: "*", schema: "public", table: "members", filter: `couple_id=eq.${coupleId}` }, load)
+      .on("postgres_changes", { event: "*", schema: "public", table: "questions", filter: `couple_id=eq.${coupleId}` }, load)
       .subscribe();
     const onShow = () => document.visibilityState === "visible" && load();
     document.addEventListener("visibilitychange", onShow);
@@ -152,10 +157,11 @@ const seenKey = id => `closer-revealed-${id}`;
 function seenReveal(id) { try { return localStorage.getItem(seenKey(id)) === "1"; } catch { return true; } }
 function markSeen(id) { try { localStorage.setItem(seenKey(id), "1"); } catch {} }
 
+// The database deals: on a daily card it may pick a waiting question instead of this deck card.
 async function draw(data, me, day) {
-  const card = pickCard(data.rounds.map(r => r.lv + ":" + r.idx));
-  const { data: round, error } = await supabase.from("rounds").insert({ couple_id: data.member.couple_id, drawn_by: me.id, day: day || null, ...card }).select().single();
-  if (error) return null; // someone else dealt today's card a moment ago: the reload picks it up
+  const card = pickCard(usedKeys(data.rounds));
+  const { data: round, error } = await supabase.rpc("deal_round", { p_day: day || null, p_lv: card.lv, p_idx: card.idx });
+  if (error || !round?.id) return null; // someone else dealt today's card a moment ago: the reload picks it up
   notify("drawn", round.id);
   return round;
 }
@@ -175,12 +181,19 @@ function Today({ me, data, partner, reload, onSeen }) {
   }, [dueToday, partner]);
 
   if (!partner) return <Waiting code={couple.invite_code} />;
+  // Asking now puts a new card on top, so like a bonus draw it waits until you've both answered this one.
+  const canAskNow = !current || current.answered_by.length >= 2 || !couple.daily_enabled;
+  const ask = <AskBar me={me} data={data} partner={partner} canAskNow={canAskNow} reload={reload} />;
   if (!current) return <div class="center">
     <p class="card-q">Your first card is waiting.</p>
     <button class="btn btn-primary btn-block" onClick={() => draw(data, me).then(reload)}>Draw our first card</button>
+    {ask}
   </div>;
-  return <Round key={current.id} round={current} me={me} partner={partner} answers={answers} couple={couple} today={today}
-    onDraw={() => draw(data, me).then(reload)} reload={reload} onSeen={onSeen} />;
+  return <>
+    <Round key={current.id} round={current} me={me} partner={partner} answers={answers} couple={couple} today={today}
+      onDraw={() => draw(data, me).then(reload)} reload={reload} onSeen={onSeen} />
+    {ask}
+  </>;
 }
 
 function Waiting({ code }) {
@@ -191,18 +204,29 @@ function Waiting({ code }) {
   </div>;
 }
 
-function Card({ round }) {
-  const wild = round.lv === "wild", m = wild ? WILD : META[round.lv];
-  return <article class={"card" + (wild ? " wild" : "")} aria-label="Card">
-    <div class="card-art" role="presentation" style={{ backgroundImage: artFor(round.lv, round.idx) }} />
+// A question one of you wrote: "From Celeste", or "Your question" on the asker's own phone.
+const askedLabel = (r, me, members) => r.asked_by === me.id ? "Your question" : `From ${members.find(m => m.user_id === r.asked_by)?.name || "your partner"}`;
+const customArtCache = new Map();
+function roundArt(r) {
+  if (!r.body) return artFor(r.lv, r.idx);
+  const k = r.lv + "|" + r.id + "|" + r.body;
+  if (!customArtCache.has(k)) customArtCache.set(k, customArt(r.lv, r.id, r.body));
+  return customArtCache.get(k);
+}
+
+function Card({ round, me, members, right }) {
+  const wild = round.lv === "wild", m = wild ? WILD : META[round.lv], asked = Boolean(round.body);
+  return <article class={"card" + (wild ? " wild" : "") + (asked ? " asked" : "")} aria-label="Card">
+    <div class="card-art" role="presentation" style={{ backgroundImage: roundArt(round) }} />
     <div class="card-body">
-      <div class="card-meta"><span>{m.label}</span><span>{round.day ? formatDay(round.day) : "Drawn"}</span></div>
+      <div class="card-meta"><span>{asked ? <span class="from">{askedLabel(round, me, members)}</span> : m.label}</span><span>{right ?? (round.day ? formatDay(round.day) : "Drawn")}</span></div>
       <p class="card-q">{cardText(round)}</p>
     </div>
   </article>;
 }
 
 function Round({ round, me, partner, answers, couple, today, onDraw, reload, onSeen }) {
+  const members = [{ user_id: me.id }, partner];
   const mine = answers.find(a => a.round_id === round.id && a.user_id === me.id);
   const theirs = answers.find(a => a.round_id === round.id && a.user_id === partner.user_id);
   const partnerDone = round.answered_by.includes(partner.user_id);
@@ -229,13 +253,13 @@ function Round({ round, me, partner, answers, couple, today, onDraw, reload, onS
   const nextDaily = couple.daily_enabled && round.day === today.day;
 
   return <>
-    <Card round={round} />
+    <Card round={round} me={me} members={members} />
     <p class="status"><span class={"dot" + (mine ? " on" : "")} />You {mine ? "answered" : "haven't answered yet"}
       <span class={"dot" + (partnerDone ? " on" : "")} style="margin-left:var(--s3)" /><span><span class="hand" style="font-size:20px">{partner.name}</span> {partnerDone ? "answered" : "hasn't yet"}</span></p>
 
     {editing && !revealed && <form onSubmit={save} class="page">
       <label class="sr-only" for="answer">Your answer</label>
-      <textarea id="answer" class="textarea" maxLength={4000} placeholder="Write your answer…" value={text} onInput={e => setText(e.target.value)} />
+      <textarea id="answer" class="textarea" maxLength={4000} placeholder={round.asked_by === me.id ? "You asked this one. What's your answer?" : "Write your answer…"} value={text} onInput={e => setText(e.target.value)} />
       <button class="btn btn-primary btn-block" disabled={busy || !text.trim()}>{busy ? "Sealing…" : mine ? "Save changes" : partnerDone ? "Seal mine and reveal both" : "Seal my answer"}</button>
       {mine && <button type="button" class="btn btn-ghost" onClick={() => { setText(mine.body); setEditing(false); }}>Cancel</button>}
       {error && <p class="error" role="alert">{error}</p>}
@@ -262,15 +286,141 @@ function Answer({ name, body, reveal }) {
   return <div class={"answer" + (reveal ? " reveal" : "")}><span class="who">{name}</span><p>{body ?? "…"}</p></div>;
 }
 
+// ---------------------------------------------------------------- questions from each other
+// Either of you can slip up to five questions into the deck. They wait face down, unreadable to the other, until
+// a daily card picks one up (see deal() in the database), or you ask one now.
+const ASK_MAX = 5, ASK_LEN = 280, TONES = ["know", "play", "world", "deep"];
+const DRAFT_KEY = "closer:draft-question";
+function readDraft() {
+  try { const d = JSON.parse(localStorage.getItem(DRAFT_KEY) || "null"); return d && typeof d.body === "string" ? d : null; } catch { return null; }
+}
+function writeDraft(d) {
+  try { d && d.body.trim() ? localStorage.setItem(DRAFT_KEY, JSON.stringify(d)) : localStorage.removeItem(DRAFT_KEY); } catch {}
+}
+function useDebounced(value, ms) {
+  const [v, setV] = useState(value);
+  useEffect(() => { const t = setTimeout(() => setV(value), ms); return () => clearTimeout(t); }, [value, ms]);
+  return v;
+}
+
+function AskBar({ me, data, partner, canAskNow, reload }) {
+  const [open, setOpen] = useState(false);
+  const theirs = data.pending.find(p => p.author_id === partner.user_id)?.waiting || 0;
+  const mine = data.questions.length;
+  return <section class="ask" aria-label="Questions from each other">
+    {theirs > 0 && <div class="facedown">
+      <span class="backs" aria-hidden="true">{Array.from({ length: Math.min(theirs, 3) }, (_, i) => <span class="back" style={{ backgroundImage: BACK_ART, "--i": i }} />)}</span>
+      <p><span class="hand">{partner.name}</span> slipped {theirs === 1 ? "a card" : `${theirs} cards`} into the deck for you.</p>
+    </div>}
+    <button class="btn btn-block" onClick={() => setOpen(true)}>Ask {partner.name} something{mine ? ` · ${mine} waiting` : ""}</button>
+    {open && <Composer me={me} data={data} partner={partner} canAskNow={canAskNow} reload={reload} onClose={() => setOpen(false)} />}
+  </section>;
+}
+
+function Composer({ me, data, partner, canAskNow, reload, onClose }) {
+  const ref = useRef(null);
+  const [draft] = useState(readDraft);
+  const [editing, setEditing] = useState(null); // the waiting question being edited, if any
+  const [body, setBody] = useState(draft?.body || ""), [lv, setLv] = useState(draft?.lv || "know");
+  const [busy, setBusy] = useState(false), [error, setError] = useState(""), [msg, setMsg] = useState("");
+  const [seed] = useState(() => String(Math.random()));
+  const preview = useDebounced(body.trim(), 250);
+  const mine = data.questions;
+  const text = body.trim(), full = mine.length >= ASK_MAX && !editing;
+
+  useEffect(() => { ref.current?.showModal(); }, []);
+  // A half-written question survives closing the sheet; an edit to a waiting one doesn't overwrite it.
+  useEffect(() => { if (!editing) writeDraft({ body, lv }); }, [body, lv, editing]);
+
+  const run = async fn => {
+    setBusy(true); setError(""); setMsg("");
+    const r = await fn(); setBusy(false);
+    if (r.error) { setError(r.error.message); return null; }
+    return r;
+  };
+  const clear = () => { setEditing(null); setBody(""); setLv("know"); writeDraft(null); };
+  const add = async e => {
+    e.preventDefault();
+    const r = await run(() => editing
+      ? supabase.from("questions").update({ body: text, lv }).eq("id", editing)
+      : supabase.from("questions").insert({ couple_id: data.member.couple_id, author_id: me.id, body: text, lv }));
+    if (!r) return;
+    setMsg(editing ? "Saved." : `In the deck. ${partner.name} won't see it until it's dealt.`);
+    clear(); reload();
+  };
+  const askNow = async () => {
+    const r = await run(() => supabase.rpc("ask_now", { p_body: text, p_lv: lv }));
+    if (!r?.data?.id) return;
+    if (editing) await supabase.from("questions").delete().eq("id", editing);
+    notify("asked", r.data.id);
+    clear(); reload(); ref.current?.close();
+  };
+  const edit = q => { setEditing(q.id); setBody(q.body); setLv(q.lv); setMsg(""); setError(""); ref.current?.querySelector("textarea")?.focus(); };
+  const cancelEdit = () => { const d = readDraft(); setEditing(null); setBody(d?.body || ""); setLv(d?.lv || "know"); };
+  const remove = async q => {
+    if (!window.confirm("Take this question out of the deck?")) return;
+    if (!await run(() => supabase.from("questions").delete().eq("id", q.id))) return;
+    if (editing === q.id) cancelEdit();
+    reload();
+  };
+
+  return <dialog ref={ref} class="sheet" aria-labelledby="ask-title" onClose={onClose}
+    onClick={e => { if (e.target === ref.current) ref.current.close(); }}>
+    <div class="sheet-body">
+      <header class="sheet-top">
+        <h2 id="ask-title">{editing ? "Edit your question" : `Ask ${partner.name}`}</h2>
+        <button type="button" class="btn btn-ghost" onClick={() => ref.current.close()}>Close</button>
+      </header>
+      <Card round={{ id: editing || seed, lv, body: preview || "Your question will appear here.", asked_by: me.id }} me={me} members={data.members} right={META[lv].name} />
+      <form onSubmit={add} class="page">
+        <div class="field">
+          <label for="ask-q">Your question</label>
+          <textarea id="ask-q" class="textarea" rows={3} autoFocus maxLength={ASK_LEN} value={body} onInput={e => setBody(e.target.value)}
+            placeholder={`Something you've wondered about ${partner.name}…`} />
+          <span class="count">{body.length}/{ASK_LEN}</span>
+        </div>
+        <fieldset class="chips">
+          <legend class="sr-only">Tone</legend>
+          {TONES.map(t => <label class="chip"><input type="radio" class="sr-only" name="ask-tone" checked={lv === t} onChange={() => setLv(t)} /><span>{META[t].name}</span></label>)}
+        </fieldset>
+        <p class="note">You'll answer it too. {partner.name} won't see it until it's dealt.</p>
+        <button class="btn btn-primary btn-block" disabled={busy || !text || full}>{editing ? "Save changes" : "Add to our deck"}</button>
+        <button type="button" class="btn btn-block" disabled={busy || !text || !canAskNow} onClick={askNow}>Ask now</button>
+        {!canAskNow && <p class="note">Ask now opens once you've both answered today's card.</p>}
+        {full && <p class="note">Five are waiting, the most at once. Ask one now, or take one out to add another.</p>}
+        {editing && <button type="button" class="btn btn-ghost" onClick={cancelEdit}>Stop editing</button>}
+        {error && <p class="error" role="alert">{error}</p>}
+        {msg && <p class="note" role="status">{msg}</p>}
+      </form>
+      {mine.length > 0 && <section class="waiting">
+        <h3 class="kicker">Waiting in the deck · {mine.length} of {ASK_MAX}</h3>
+        <ul>{mine.map(q => <li class={"waiting-item" + (editing === q.id ? " editing" : "")}>
+          <p>{q.body}</p>
+          <div class="waiting-row"><span class="kicker">{META[q.lv].name}</span>
+            <button type="button" class="btn btn-ghost" onClick={() => edit(q)}>Edit</button>
+            <button type="button" class="btn btn-ghost" onClick={() => remove(q)}>Remove</button></div>
+        </li>)}</ul>
+      </section>}
+    </div>
+  </dialog>;
+}
+
 // ---------------------------------------------------------------- everything you've answered together
 function Ours({ me, data, partner }) {
-  const { rounds, answers } = data;
-  if (!rounds.length) return <p class="note">Your cards will collect here.</p>;
-  return <div class="history">{rounds.map(r => {
+  const { answers, members } = data;
+  const [onlyAsked, setOnlyAsked] = useState(false);
+  if (!data.rounds.length) return <p class="note">Your cards will collect here.</p>;
+  const rounds = onlyAsked ? data.rounds.filter(r => r.body) : data.rounds;
+  return <div class="history">
+    {data.rounds.some(r => r.body) && <div class="chips" role="group" aria-label="Show">
+      <button class="chip" aria-pressed={!onlyAsked} onClick={() => setOnlyAsked(false)}>All cards</button>
+      <button class="chip" aria-pressed={onlyAsked} onClick={() => setOnlyAsked(true)}>From us</button>
+    </div>}
+    {rounds.map(r => {
     const mine = answers.find(a => a.round_id === r.id && a.user_id === me.id);
     const theirs = partner && answers.find(a => a.round_id === r.id && a.user_id === partner.user_id);
     return <section class="entry">
-      <span class="kicker">{r.lv === "wild" ? "Wild" : META[r.lv].name} · {r.day ? formatDay(r.day) : formatDay(r.created_at.slice(0, 10))}</span>
+      <span class="kicker">{r.body ? askedLabel(r, me, members) : r.lv === "wild" ? "Wild" : META[r.lv].name} · {r.day ? formatDay(r.day) : formatDay(r.created_at.slice(0, 10))}</span>
       <p class="entry-q">{cardText(r)}</p>
       {theirs && <Answer name={partner.name} body={theirs.body} />}
       {mine ? <Answer name="You" body={mine.body} /> : <p class="note">You haven't answered this one.</p>}
@@ -325,6 +475,16 @@ function Settings({ me, data, partner, reload }) {
         </select></div>}
       <p class="note">{couple.daily_enabled ? "Either of you can still draw a bonus card once you've both answered." : "No daily card: draw a new one whenever you like."}</p>
       {phoneTz && phoneTz !== couple.time_zone && <button class="btn" onClick={() => saveCouple({ time_zone: phoneTz })}>Use this phone's time zone ({phoneTz})</button>}
+    </section>
+
+    <section class="panel"><h2>Questions from each other</h2>
+      <div class="field"><label for="rhythm">Questions you write take the daily card</label>
+        <select id="rhythm" class="input" value={couple.ask_rhythm} onChange={e => saveCouple({ ask_rhythm: e.target.value })}>
+          <option value="alternate">Every other day, when one is waiting</option>
+          <option value="whenever">Any day one is waiting</option>
+          <option value="asked">Never: only when we ask now</option>
+        </select></div>
+      <p class="note">{couple.daily_enabled ? "On the other days the card comes from the deck." : "With no daily card, they come up when you draw the next card."}</p>
     </section>
 
     <section class="panel"><h2>Notifications</h2>

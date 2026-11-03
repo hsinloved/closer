@@ -1,8 +1,9 @@
-import { admin, pushTo, json } from "./_lib.js";
-import { pickCard, localDay } from "../shared/pick.js";
+import { admin, pushTo, json, dailyMessage } from "./_lib.js";
+import { pickCard, localDay, usedKeys } from "../shared/pick.js";
 
 // Deals the daily card. Run it every hour (see .github/workflows/daily-card.yml); for each couple with the
 // daily rhythm on, it deals once their local clock has passed their chosen hour, and does nothing otherwise.
+// The database decides whether today is a question one of you wrote or the deck card picked here.
 // If one of you opened the app first and the card already exists, it stays quiet: the app told the other already.
 export default async function handler(req, res) {
   const secret = process.env.CRON_SECRET;
@@ -18,11 +19,11 @@ export default async function handler(req, res) {
     if (hour < c.daily_hour) continue;
     const { data: past } = await db.from("rounds").select("lv, idx, day").eq("couple_id", c.id);
     if (past.some(r => r.day === day)) continue;
-    const card = pickCard(past.map(r => r.lv + ":" + r.idx));
-    const { error: insertError } = await db.from("rounds").insert({ couple_id: c.id, day, ...card });
-    if (insertError) continue; // the app dealt it a moment ago (unique couple + day)
-    const { data: members } = await db.from("members").select("user_id").eq("couple_id", c.id);
-    await pushTo(db, members.map(m => m.user_id), { title: "Today's card is here", body: "Open Closer to see it.", tag: `day-${day}`, url: "/" });
+    const card = pickCard(usedKeys(past));
+    const { data: round, error: dealError } = await db.rpc("deal", { p_couple: c.id, p_by: null, p_day: day, p_lv: card.lv, p_idx: card.idx });
+    if (dealError || !round?.id) continue; // the app dealt it a moment ago
+    const { data: members } = await db.from("members").select("user_id, name").eq("couple_id", c.id);
+    for (const m of members) await pushTo(db, [m.user_id], dailyMessage(round, members, m.user_id));
     dealt.push(c.id);
   }
   return json(res, 200, { dealt: dealt.length });
