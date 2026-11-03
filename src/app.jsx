@@ -130,7 +130,8 @@ function Pair({ onDone }) {
   const [error, setError] = useState(""), [busy, setBusy] = useState(false);
   const run = async fn => { setBusy(true); setError(""); const { error } = await fn(); setBusy(false); if (error) setError(error.message); else onDone(); };
   const create = e => { e.preventDefault(); run(() => supabase.rpc("create_couple", { p_name: name })); };
-  const join = e => { e.preventDefault(); run(() => supabase.rpc("join_couple", { p_code: code, p_name: name })); };
+  // Joining completes the pair, so let the first of you know (their phone, if they've turned notifications on).
+  const join = e => { e.preventDefault(); run(async () => { const r = await supabase.rpc("join_couple", { p_code: code, p_name: name }); if (!r.error) notify("joined"); return r; }); };
   return <Frame><div class="center">
     <div class="field"><label for="name">What should Closer call you?</label><input id="name" class="input" autocomplete="given-name" maxLength={40} value={name} onInput={e => setName(e.target.value)} /></div>
     {mode === "start" && <>
