@@ -1,3 +1,4 @@
+import { studyArt } from "./art.js";
 // The deck and its card art, shared by the in-browser app and the server functions.
 // Lifted from the original single-file game so both modes draw the same cards.
 const Q = {
@@ -403,7 +404,8 @@ function pipArt() {
   return "url(\"data:image/svg+xml," + encodeURIComponent(svg) + "\")";
 }
 const artCache = new Map();
-const artFor = (lv, idx) => { const k = lv + ":" + idx; if (!artCache.has(k)) artCache.set(k, cardArt(lv, idx, { ground: "none" })); return artCache.get(k); };
+// The app's cards use the "Two-Body Studies" plates (art.js, ART.md). cardArt above is the earlier folded-paper set.
+const artFor = (lv, idx) => studyArt(lv, idx);
 const BACK_ART = backArt(), PIP_ART = pipArt();
 
 export { Q, META, JORDER, FINAL_TEXT, FINAL, WILD, PAL, cardArt, artFor, motifFor, BACK_ART, PIP_ART, hash };
