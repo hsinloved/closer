@@ -33,3 +33,17 @@ test("a card you wrote shows your question, and doesn't upset the deck", () => {
   assert.notEqual(c.lv, "own");
   assert.ok(cardText(c).length > 10);
 });
+
+test("never deals a card that needs you in the same room", async () => {
+  const { IN_PERSON } = await import("../shared/pick.js");
+  for (let n = 0; n < 5000; n++) {
+    const c = pickCard([]);
+    assert.ok(!(IN_PERSON[c.lv] || []).includes(c.idx), `dealt in-person card ${c.lv}:${c.idx}`);
+  }
+  // Even once every remote wild card has been used, it starts over among those, not the in-person ones.
+  const usedWild = Q.wild.map((_, i) => "wild:" + i);
+  for (let n = 0; n < 200; n++) {
+    const c = pickCard(usedWild, Math.random, { level: "wild" });
+    assert.ok(!IN_PERSON.wild.includes(c.idx));
+  }
+});
