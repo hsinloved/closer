@@ -88,3 +88,13 @@ a { color: var(--accent-ink); }
 .tab[aria-current="page"] { color: var(--text); }
 .tab[aria-current="page"]::after { content: ""; position: absolute; left: 30%; right: 30%; top: 0; height: 2px; background: var(--accent-fill); }
 .badge { display: inline-block; min-width: 8px; height: 8px; border-radius: 50%; background: var(--accent-ink); margin-left: 6px; vertical-align: middle; }
+
+/* Comments: a quieter note tucked under an answer */
+.comment { margin: calc(-1 * var(--s2)) 0 0 var(--s4); padding: var(--s2) var(--s3); border-left: 2px solid var(--accent-ink); display: flex; flex-direction: column; gap: var(--s1); }
+.comment .who { font: 20px/1.1 var(--hand); color: var(--accent-ink); }
+.comment p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.comment-form { margin-left: var(--s4); display: flex; flex-direction: column; gap: var(--s2); }
+.comment-input { min-height: 88px; }
+.link { background: none; border: 0; padding: var(--s1) 0; color: var(--accent-ink); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; font-size: 15px; min-height: 44px; }
+.comment-add { align-self: flex-start; margin-left: var(--s4); }
+.comment-actions { display: flex; gap: var(--s4); }

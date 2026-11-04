@@ -1,0 +1,27 @@
+# Sends a notification to everyone who has notifications on, e.g. to announce a new feature.
+# GitHub → Actions → Announce → Run workflow, then fill in the title and message.
+name: Announce
+on:
+  workflow_dispatch:
+    inputs:
+      title:
+        description: Notification title (up to 80 characters)
+        required: true
+      body:
+        description: Notification message (up to 200 characters)
+        required: true
+jobs:
+  announce:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send the notification
+        env:
+          CLOSER_URL: ${{ secrets.CLOSER_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          TITLE: ${{ inputs.title }}
+          BODY: ${{ inputs.body }}
+        run: |
+          if [ -z "$CLOSER_URL" ] || [ -z "$CRON_SECRET" ]; then echo "CLOSER_URL or CRON_SECRET is not set"; exit 1; fi
+          jq -n --arg title "$TITLE" --arg body "$BODY" '{title: $title, body: $body}' |
+            curl -fsS -X POST -H "Authorization: Bearer $CRON_SECRET" -H "content-type: application/json" --data @- "$CLOSER_URL/api/announce"
+          echo
