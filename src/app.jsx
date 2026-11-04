@@ -162,6 +162,32 @@ async function draw(data, me, day) {
   return round;
 }
 
+// Write your own question instead of drawing one. It becomes the next card for both of you.
+function WriteCard({ data, me, partner, onDone }) {
+  const [open, setOpen] = useState(false), [text, setText] = useState("");
+  const [busy, setBusy] = useState(false), [error, setError] = useState("");
+  if (!open) return <button class="btn btn-ghost btn-block" onClick={() => setOpen(true)}>Write our own question</button>;
+  const send = async e => {
+    e.preventDefault(); setBusy(true); setError("");
+    // The index only seeds the card's picture, so each of your questions gets a different one.
+    const idx = data.rounds.filter(r => r.lv === "own").length % 30000;
+    const { data: round, error } = await supabase.from("rounds")
+      .insert({ couple_id: data.member.couple_id, drawn_by: me.id, lv: "own", idx, question: text.trim() }).select().single();
+    setBusy(false);
+    if (error) return setError(error.message);
+    notify("drawn", round.id);
+    setText(""); setOpen(false); onDone();
+  };
+  return <form onSubmit={send} class="page">
+    <div class="field"><label for="own-q">A question{partner ? ` for you and ${partner.name}` : " for you both"}</label>
+      <textarea id="own-q" class="textarea" maxLength={300} placeholder="What do you want to ask?" value={text} onInput={e => setText(e.target.value)} /></div>
+    <p class="note">You'll both answer it, sealed until you've both written, like any card.</p>
+    <button class="btn btn-primary btn-block" disabled={busy || !text.trim()}>{busy ? "Sending…" : "Make it our next card"}</button>
+    <button type="button" class="btn btn-ghost" onClick={() => { setOpen(false); setError(""); }}>Cancel</button>
+    {error && <p class="error" role="alert">{error}</p>}
+  </form>;
+}
+
 function Today({ me, data, partner, reload, onSeen }) {
   const { couple, rounds, answers } = data;
   const today = localDay(couple.time_zone);
@@ -180,8 +206,9 @@ function Today({ me, data, partner, reload, onSeen }) {
   if (!current) return <div class="center">
     <p class="card-q">Your first card is waiting.</p>
     <button class="btn btn-primary btn-block" onClick={() => draw(data, me).then(reload)}>Draw our first card</button>
+    <WriteCard data={data} me={me} partner={partner} onDone={reload} />
   </div>;
-  return <Round key={current.id} round={current} me={me} partner={partner} answers={answers} comments={data.comments} couple={couple} today={today}
+  return <Round key={current.id} round={current} data={data} me={me} partner={partner} answers={answers} comments={data.comments} couple={couple} today={today}
     onDraw={() => draw(data, me).then(reload)} reload={reload} onSeen={onSeen} />;
 }
 
@@ -193,18 +220,21 @@ function Waiting({ code }) {
   </div>;
 }
 
-function Card({ round }) {
-  const wild = round.lv === "wild", m = wild ? WILD : META[round.lv];
+// Who wrote a card of your own, as the card's label.
+const ownLabel = (round, me, partner) => round.drawn_by === me?.id ? "Written by you" : `Written by ${partner?.name || "your partner"}`;
+
+function Card({ round, me, partner }) {
+  const wild = round.lv === "wild", m = round.lv === "own" ? { label: ownLabel(round, me, partner) } : wild ? WILD : META[round.lv];
   return <article class={"card" + (wild ? " wild" : "")} aria-label="Card">
     <div class="card-art" role="presentation" style={{ backgroundImage: artFor(round.lv, round.idx) }} />
     <div class="card-body">
-      <div class="card-meta"><span>{m.label}</span><span>{round.day ? formatDay(round.day) : "Drawn"}</span></div>
+      <div class="card-meta"><span>{m.label}</span><span>{round.day ? formatDay(round.day) : round.lv === "own" ? "" : "Drawn"}</span></div>
       <p class="card-q">{cardText(round)}</p>
     </div>
   </article>;
 }
 
-function Round({ round, me, partner, answers, comments, couple, today, onDraw, reload, onSeen }) {
+function Round({ round, data, me, partner, answers, comments, couple, today, onDraw, reload, onSeen }) {
   const mine = answers.find(a => a.round_id === round.id && a.user_id === me.id);
   const theirs = answers.find(a => a.round_id === round.id && a.user_id === partner.user_id);
   const partnerDone = round.answered_by.includes(partner.user_id);
@@ -231,7 +261,7 @@ function Round({ round, me, partner, answers, comments, couple, today, onDraw, r
   const nextDaily = couple.daily_enabled && round.day === today.day;
 
   return <>
-    <Card round={round} />
+    <Card round={round} me={me} partner={partner} />
     <p class="status"><span class={"dot" + (mine ? " on" : "")} />You {mine ? "answered" : "haven't answered yet"}
       <span class={"dot" + (partnerDone ? " on" : "")} style="margin-left:var(--s3)" /><span><span class="hand" style="font-size:20px">{partner.name}</span> {partnerDone ? "answered" : "hasn't yet"}</span></p>
 
@@ -257,7 +287,10 @@ function Round({ round, me, partner, answers, comments, couple, today, onDraw, r
       <TheirComment round={round} partner={partner} comments={comments} />
     </div>}
 
-    {(revealed || !couple.daily_enabled) && <button class="btn btn-block" onClick={onDraw}>{nextLabel}</button>}
+    {(revealed || !couple.daily_enabled) && <>
+      <button class="btn btn-block" onClick={onDraw}>{nextLabel}</button>
+      <WriteCard data={data} me={me} partner={partner} onDone={reload} />
+    </>}
     {revealed && nextDaily && <p class="note">Tomorrow's card arrives at {String(couple.daily_hour).padStart(2, "0")}:00.</p>}
   </>;
 }
@@ -320,7 +353,7 @@ function Ours({ me, data, partner, reload }) {
     const mine = answers.find(a => a.round_id === r.id && a.user_id === me.id);
     const theirs = partner && answers.find(a => a.round_id === r.id && a.user_id === partner.user_id);
     return <section class="entry">
-      <span class="kicker">{r.lv === "wild" ? "Wild" : META[r.lv].name} · {r.day ? formatDay(r.day) : formatDay(r.created_at.slice(0, 10))}</span>
+      <span class="kicker">{r.lv === "own" ? ownLabel(r, me, partner) : r.lv === "wild" ? "Wild" : META[r.lv].name} · {r.day ? formatDay(r.day) : formatDay(r.created_at.slice(0, 10))}</span>
       <p class="entry-q">{cardText(r)}</p>
       {theirs && <Answer name={partner.name} body={theirs.body} />}
       {theirs && mine && <MyComment round={r} me={me} partner={partner} comments={comments} reload={reload} />}

@@ -27,7 +27,7 @@ export default async function handler(req, res) {
     return json(res, 200, await pushTo(db, [partner.user_id], { title: `${mine.name} joined you on Closer`, body: "You're paired. Open Closer for your first card.", tag: "paired", url: "/" }));
   }
 
-  const { data: round } = await db.from("rounds").select("id, couple_id, day, drawn_by, answered_by").eq("id", roundId).single();
+  const { data: round } = await db.from("rounds").select("id, couple_id, lv, day, drawn_by, answered_by").eq("id", roundId).single();
   if (!round) return json(res, 404, { error: "No such card" });
   const { data: members } = await db.from("members").select("user_id, name").eq("couple_id", round.couple_id);
   const mine = members?.find(m => m.user_id === me), partner = members?.find(m => m.user_id !== me);
@@ -48,7 +48,9 @@ export default async function handler(req, res) {
     message = { title: `${mine.name} commented on your answer`, body: "Open Closer to read it.", tag: `comment-${round.id}` };
   } else {
     if (round.drawn_by !== me) return json(res, 409, { error: "You did not draw this card" });
-    message = round.day
+    message = round.lv === "own"
+      ? { title: `${mine.name} wrote you a question`, body: "Open Closer to answer it.", tag: `round-${round.id}` }
+      : round.day
       ? { title: "Today's card is here", body: "Open Closer to see it.", tag: `day-${round.day}` }
       : { title: `${mine.name} drew a new card`, body: "Open Closer to see it.", tag: `round-${round.id}` };
   }

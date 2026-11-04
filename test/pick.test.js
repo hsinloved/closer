@@ -26,3 +26,10 @@ test("today turns over at local midnight, not UTC", () => {
   assert.deepEqual(localDay("Europe/Berlin", lateEvening), { day: "2026-11-03", hour: 0 });
   assert.deepEqual(localDay("UTC", lateEvening), { day: "2026-11-02", hour: 23 });
 });
+
+test("a card you wrote shows your question, and doesn't upset the deck", () => {
+  assert.equal(cardText({ lv: "own", idx: 0, question: "What made you smile today?" }), "What made you smile today?");
+  const c = pickCard(["own:0", "own:1"], Math.random);
+  assert.notEqual(c.lv, "own");
+  assert.ok(cardText(c).length > 10);
+});
