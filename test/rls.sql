@@ -204,6 +204,64 @@ select pg_temp.as_user(:X);
 select pg_temp.check((select count(*) = 0 from public.rounds where lv = 'own'), 'strangers cannot see your questions');
 reset role;
 
+-- Skipping cards ------------------------------------------------------------
+select pg_temp.as_user(:A);
+insert into public.rounds (couple_id, lv, idx, day, drawn_by) values (public.my_couple(), 'deep', 1, '2026-12-01', auth.uid()) returning id as s1 \gset
+select (public.skip_round(:'s1', 'deep', 2::smallint)).id as s2 \gset
+select pg_temp.check((select skipped_at is not null and day is null from public.rounds where id = :'s1'), 'a skipped card is marked and gives up its day');
+select pg_temp.check((select day = '2026-12-01' and lv = 'deep' and idx = 2 from public.rounds where id = :'s2'), 'the new card takes the skipped card''s day');
+select set_config('my.s2', :'s2', false);
+select (public.skip_round(:'s2', 'know', 0::smallint)).id as s3 \gset
+select (public.skip_round(:'s3', 'play', 0::smallint)).id as s4 \gset
+select set_config('my.s4', :'s4', false);
+do $$ begin
+  perform public.skip_round(current_setting('my.s4')::uuid, 'world', 0::smallint);
+  raise exception 'FAILED: a fourth skip';
+exception when others then
+  if sqlerrm like 'FAILED%' then raise; end if;
+  if sqlerrm <> 'No skips left today' then raise exception 'FAILED: unexpected error %', sqlerrm; end if;
+  raise notice 'ok: three skips a day, no more';
+end $$;
+select pg_temp.check((select count(*) = 3 from public.rounds where skipped_at is not null), 'the fourth skip changed nothing');
+reset role;
+-- The answered card r1, a question B wrote, and a stranger: none can be skipped.
+update public.rounds set skipped_at = null, skipped_by = null where skipped_at is not null; -- give the couple its skips back
+select set_config('my.r1', :'r1', false);
+select pg_temp.as_user(:A);
+do $$ begin
+  perform public.skip_round(current_setting('my.r1')::uuid, 'know', 0::smallint);
+  raise exception 'FAILED: skipped an answered card';
+exception when others then
+  if sqlerrm like 'FAILED%' then raise; end if;
+  raise notice 'ok: no skipping once someone has answered (%)', sqlerrm;
+end $$;
+reset role;
+select pg_temp.as_user(:B);
+insert into public.rounds (couple_id, lv, idx, question, drawn_by) values (public.my_couple(), 'own', 1, 'Only for you', auth.uid()) returning id as q1 \gset
+reset role;
+select set_config('my.q1', :'q1', false);
+select pg_temp.as_user(:A);
+do $$ begin
+  perform public.skip_round(current_setting('my.q1')::uuid, 'know', 0::smallint);
+  raise exception 'FAILED: skipped the partner''s question';
+exception when others then
+  if sqlerrm like 'FAILED%' then raise; end if;
+  raise notice 'ok: you cannot skip a question your partner wrote';
+end $$;
+reset role;
+select pg_temp.as_user(:B);
+select pg_temp.check((public.skip_round(:'q1', 'know', 0::smallint)).id is not null, 'whoever wrote a question can withdraw it');
+reset role;
+select pg_temp.as_user(:X);
+do $$ begin
+  perform public.skip_round(current_setting('my.s2')::uuid, 'know', 0::smallint);
+  raise exception 'FAILED: a stranger skipped';
+exception when others then
+  if sqlerrm like 'FAILED%' then raise; end if;
+  raise notice 'ok: strangers cannot skip your cards';
+end $$;
+reset role;
+
 -- Reset pairing ---------------------------------------------------------------
 -- X (Eve, alone in her own couple) cannot touch A and B's pair; resetting only ever removes your own.
 select pg_temp.as_user(:X);
