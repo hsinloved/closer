@@ -20,4 +20,5 @@ export function localDay(timeZone, now = new Date()) {
   return { day: `${parts.year}-${parts.month}-${parts.day}`, hour: Number(parts.hour) };
 }
 
-export const cardText = r => (Q[r.lv] || [])[r.idx] || "";
+// A card you wrote yourselves carries its own question; the rest come from the deck.
+export const cardText = r => r.lv === "own" ? r.question || "" : (Q[r.lv] || [])[r.idx] || "";

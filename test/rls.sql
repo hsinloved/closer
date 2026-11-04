@@ -183,6 +183,27 @@ select pg_temp.as_user(:X);
 select pg_temp.check((select count(*) = 0 from public.comments), 'strangers see no comments');
 reset role;
 
+-- Your own questions -------------------------------------------------------
+select pg_temp.as_user(:A);
+insert into public.rounds (couple_id, lv, idx, question, drawn_by) values (public.my_couple(), 'own', 0, 'What made you smile today?', auth.uid());
+reset role;
+select pg_temp.as_user(:B);
+select pg_temp.check((select question = 'What made you smile today?' from public.rounds where lv = 'own'), 'your partner sees the question you wrote');
+do $$ begin
+  insert into public.rounds (couple_id, lv, idx, drawn_by) values (public.my_couple(), 'own', 0, auth.uid());
+  raise exception 'FAILED: own card without a question';
+exception when check_violation then raise notice 'ok: a card of your own needs a question';
+end $$;
+do $$ begin
+  insert into public.rounds (couple_id, lv, idx, question, drawn_by) values (public.my_couple(), 'own', 0, 'Hi', 'aaaaaaaa-0000-0000-0000-000000000001');
+  raise exception 'FAILED: wrote a question as the partner';
+exception when insufficient_privilege then raise notice 'ok: you cannot write a question as your partner';
+end $$;
+reset role;
+select pg_temp.as_user(:X);
+select pg_temp.check((select count(*) = 0 from public.rounds where lv = 'own'), 'strangers cannot see your questions');
+reset role;
+
 -- Reset pairing ---------------------------------------------------------------
 -- X (Eve, alone in her own couple) cannot touch A and B's pair; resetting only ever removes your own.
 select pg_temp.as_user(:X);
