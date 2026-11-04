@@ -105,3 +105,8 @@ a { color: var(--accent-ink); }
 .chip[aria-pressed="true"] { background: var(--surface); border-color: var(--accent-ink); color: var(--text); }
 .chip-count { font-size: 12px; min-width: 20px; height: 20px; border-radius: 999px; background: var(--accent-ink); color: var(--bg, #231f20); display: inline-flex; align-items: center; justify-content: center; padding: 0 6px; }
 .tag { display: inline-block; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--accent-ink); color: var(--accent-ink); letter-spacing: 0.06em; }
+
+/* Skip: a quiet link under the card's status line */
+.skip { margin-top: calc(-1 * var(--s2)); }
+.skip .note { font-size: 14px; }
+.link:disabled { opacity: .5; cursor: default; }

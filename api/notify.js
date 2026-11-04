@@ -1,13 +1,13 @@
 import { admin, pushTo, json } from "./_lib.js";
 
-// Called by the app right after you answer, comment on or draw a card, join your partner (or to send yourself a test), with your sign-in token.
+// Called by the app right after you answer, comment on, draw or skip a card, join your partner (or to send yourself a test), with your sign-in token.
 // Tells your partner, using only what the database confirms happened: nothing here trusts the request body
 // beyond which round it was.
 export default async function handler(req, res) {
   if (req.method !== "POST") return json(res, 405, { error: "POST only" });
   const token = (req.headers.authorization || "").replace(/^Bearer /, "");
   const { round_id: roundId, event } = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body || {});
-  if (!token || !["answered", "commented", "drawn", "joined", "test"].includes(event) || (["answered", "commented", "drawn"].includes(event) && !roundId)) return json(res, 400, { error: "token, event and round_id are required" });
+  if (!token || !["answered", "commented", "drawn", "skipped", "joined", "test"].includes(event) || (["answered", "commented", "drawn", "skipped"].includes(event) && !roundId)) return json(res, 400, { error: "token, event and round_id are required" });
 
   const db = admin();
   const { data: auth, error: authError } = await db.auth.getUser(token);
@@ -40,6 +40,15 @@ export default async function handler(req, res) {
     message = round.answered_by.includes(partner.user_id)
       ? { title: `${mine.name} answered too`, body: "You've both answered. Open Closer to reveal.", tag: `round-${round.id}` }
       : { title: `${mine.name} answered ${round.day ? "today's card" : "a card"}`, body: "Write yours to unlock it.", tag: `round-${round.id}` };
+  } else if (event === "skipped") {
+    // The new card is yours, and you skipped one in the last few minutes: only then is this a real skip.
+    if (round.drawn_by !== me) return json(res, 409, { error: "You did not skip into this card" });
+    const since = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    const { data: skippedNow } = await db.from("rounds").select("lv").eq("couple_id", round.couple_id).eq("skipped_by", me).gte("skipped_at", since).order("skipped_at", { ascending: false }).limit(1);
+    if (!skippedNow?.length) return json(res, 409, { error: "No recent skip" });
+    message = skippedNow[0].lv === "own"
+      ? { title: `${mine.name} swapped their question`, body: "There's a new card instead. Open Closer to see it.", tag: `round-${round.id}` }
+      : { title: `${mine.name} skipped the card`, body: "Here's a new one. Open Closer to see it.", tag: `round-${round.id}` };
   } else if (event === "commented") {
     const { data: comment } = await db.from("comments").select("created_at").eq("round_id", round.id).eq("author_id", me).maybeSingle();
     if (!comment) return json(res, 409, { error: "You have not commented on this card" });

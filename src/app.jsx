@@ -85,7 +85,10 @@ function useCouple(me) {
       supabase.from("answers").select("*"),
       supabase.from("comments").select("*")
     ]);
-    setState({ loading: false, member, couple: couple.data, members: members.data || [], rounds: rounds.data || [], answers: answers.data || [], comments: comments.data || [] });
+    // Skipped cards stay out of sight, but are kept so the deck doesn't deal them again soon.
+    setState({ loading: false, member, couple: couple.data, members: members.data || [],
+      rounds: (rounds.data || []).filter(r => !r.skipped_at), skipped: (rounds.data || []).filter(r => r.skipped_at),
+      answers: answers.data || [], comments: comments.data || [] });
   }, [me.id]);
 
   useEffect(() => { load(); }, [load]);
@@ -154,12 +157,40 @@ const seenKey = id => `closer-revealed-${id}`;
 function seenReveal(id) { try { return localStorage.getItem(seenKey(id)) === "1"; } catch { return true; } }
 function markSeen(id) { try { localStorage.setItem(seenKey(id), "1"); } catch {} }
 
+const usedCards = data => [...data.rounds, ...(data.skipped || [])].map(r => r.lv + ":" + r.idx);
+const SKIPS_PER_DAY = 3;
+// Skips the two of you have used today, counted at your midnight like the daily card.
+const skipsLeft = data => SKIPS_PER_DAY - (data.skipped || []).filter(r => localDay(data.couple.time_zone, new Date(r.skipped_at)).day === localDay(data.couple.time_zone).day).length;
+
 async function draw(data, me, day) {
-  const card = pickCard(data.rounds.map(r => r.lv + ":" + r.idx));
+  const card = pickCard(usedCards(data));
   const { data: round, error } = await supabase.from("rounds").insert({ couple_id: data.member.couple_id, drawn_by: me.id, day: day || null, ...card }).select().single();
   if (error) return null; // someone else dealt today's card a moment ago: the reload picks it up
   notify("drawn", round.id);
   return round;
+}
+
+// Skip a card nobody has answered yet: up to three a day between you. A question your partner wrote can't be
+// skipped; whoever wrote one can withdraw it (that uses a skip too).
+function SkipCard({ round, data, me, partner, reload }) {
+  const [busy, setBusy] = useState(false), [error, setError] = useState("");
+  if (round.lv === "own" && round.drawn_by !== me.id) return null;
+  const left = skipsLeft(data), withdraw = round.lv === "own";
+  if (left <= 0) return <p class="note skip">No skips left today.</p>;
+  const skip = async () => {
+    setBusy(true); setError("");
+    const card = pickCard(usedCards(data));
+    const { data: fresh, error } = await supabase.rpc("skip_round", { p_round: round.id, p_lv: card.lv, p_idx: card.idx });
+    setBusy(false);
+    if (error) return setError(error.message);
+    notify("skipped", fresh.id);
+    reload();
+  };
+  return <div class="skip">
+    <button class="link" disabled={busy} onClick={skip}>{busy ? "Finding another…" : withdraw ? "Withdraw my question" : "Skip this card"}</button>
+    <span class="note"> ({left} {left === 1 ? "skip" : "skips"} left today)</span>
+    {error && <p class="error" role="alert">{error}</p>}
+  </div>;
 }
 
 // Write your own question instead of drawing one. It becomes the next card for both of you.
@@ -264,6 +295,8 @@ function Round({ round, data, me, partner, answers, comments, couple, today, onD
     <Card round={round} me={me} partner={partner} />
     <p class="status"><span class={"dot" + (mine ? " on" : "")} />You {mine ? "answered" : "haven't answered yet"}
       <span class={"dot" + (partnerDone ? " on" : "")} style="margin-left:var(--s3)" /><span><span class="hand" style="font-size:20px">{partner.name}</span> {partnerDone ? "answered" : "hasn't yet"}</span></p>
+
+    {!mine && !partnerDone && <SkipCard round={round} data={data} me={me} partner={partner} reload={reload} />}
 
     {editing && !revealed && <form onSubmit={save} class="page">
       <label class="sr-only" for="answer">Your answer</label>
