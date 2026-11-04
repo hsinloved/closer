@@ -346,14 +346,29 @@ function TheirComment({ round, partner, comments }) {
 }
 
 // ---------------------------------------------------------------- everything you've answered together
+// Filters for Ours. The choice is remembered on this phone only.
+const OURS_FILTERS = [["all", "All"], ["own", "Our questions"], ["deck", "From the deck"]];
+const FILTER_KEY = "closer:ours-filter";
+const readFilter = () => { try { const f = localStorage.getItem(FILTER_KEY); return OURS_FILTERS.some(([k]) => k === f) ? f : "all"; } catch { return "all"; } };
+
 function Ours({ me, data, partner, reload }) {
   const { rounds, answers, comments } = data;
+  const [filter, setFilterState] = useState(readFilter);
+  const setFilter = f => { setFilterState(f); try { localStorage.setItem(FILTER_KEY, f); } catch {} };
   if (!rounds.length) return <p class="note">Your cards will collect here.</p>;
-  return <div class="history">{rounds.map(r => {
+  const shown = rounds.filter(r => filter === "all" || (filter === "own") === (r.lv === "own"));
+  const ownCount = rounds.filter(r => r.lv === "own").length;
+  return <div class="history">
+    <div class="chips" role="group" aria-label="Show">
+      {OURS_FILTERS.map(([k, label]) => <button class="chip" aria-pressed={filter === k} onClick={() => setFilter(k)}>
+        {label}{k === "own" && ownCount > 0 && <span class="chip-count">{ownCount}</span>}</button>)}
+    </div>
+    {!shown.length && <p class="note">{filter === "own" ? "No questions of your own yet. Write one from Today." : "Nothing here yet."}</p>}
+    {shown.map(r => {
     const mine = answers.find(a => a.round_id === r.id && a.user_id === me.id);
     const theirs = partner && answers.find(a => a.round_id === r.id && a.user_id === partner.user_id);
     return <section class="entry">
-      <span class="kicker">{r.lv === "own" ? ownLabel(r, me, partner) : r.lv === "wild" ? "Wild" : META[r.lv].name} · {r.day ? formatDay(r.day) : formatDay(r.created_at.slice(0, 10))}</span>
+      <span class="kicker">{r.lv === "own" ? <span class="tag">{ownLabel(r, me, partner)}</span> : r.lv === "wild" ? "Wild" : META[r.lv].name} · {r.day ? formatDay(r.day) : formatDay(r.created_at.slice(0, 10))}</span>
       <p class="entry-q">{cardText(r)}</p>
       {theirs && <Answer name={partner.name} body={theirs.body} />}
       {theirs && mine && <MyComment round={r} me={me} partner={partner} comments={comments} reload={reload} />}
@@ -361,7 +376,8 @@ function Ours({ me, data, partner, reload }) {
       {theirs && mine && <TheirComment round={r} partner={partner} comments={comments} />}
       {mine && !theirs && partner && <p class="note">{r.answered_by.includes(partner.user_id) ? "Sealed" : `Waiting for ${partner.name}`}.</p>}
     </section>;
-  })}</div>;
+  })}
+  </div>;
 }
 
 // ---------------------------------------------------------------- settings
