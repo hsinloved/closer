@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "preact/hooks";
 import { supabase, configured, notify } from "./supabase.js";
-import { pushSupported, pushState, enablePush, disablePush, isStandalone, isIOS } from "./push.js";
+import { pushSupported, pushState, enablePush, disablePush, isStandalone, isIOS, keepPushFresh } from "./push.js";
 import { META, WILD, artFor } from "../shared/deck.js";
 import { pickCard, localDay, cardText } from "../shared/pick.js";
 
@@ -110,6 +110,7 @@ function useCouple(me) {
 
 function Home({ me }) {
   const [data, reload] = useCouple(me);
+  useEffect(() => { keepPushFresh(me.id); }, [me.id]);
   const [tab, setTab] = useState("today");
   const [, setSeen] = useState(0); // re-render the tab badge after a reveal
   if (data.loading) return <Frame />;
