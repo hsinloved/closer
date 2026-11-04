@@ -72,3 +72,8 @@ the new app; the in-person game lives on at `/together.html`.
 `test/run-rls.sh` runs the row-level security checks against any Postgres (see the script). They cover:
 your partner's answer stays unreadable until you've answered, nobody can answer or draw as the other person,
 strangers see nothing, answers lock after the reveal.
+
+## Announcing something new
+
+GitHub → **Actions** → **Announce** → **Run workflow**, then type a title and a message. Everyone who has
+notifications on gets it. It uses the same `CLOSER_URL` and `CRON_SECRET` secrets as the daily card.

@@ -152,6 +152,37 @@ select pg_temp.as_user(:B);
 select pg_temp.check((select count(*) = 0 from public.push_subscriptions), 'devices are private to their owner');
 reset role;
 
+-- Comments ------------------------------------------------------------------
+-- r1 is revealed (both answered); B draws a second card nobody has answered yet.
+select pg_temp.as_user(:B);
+insert into public.rounds (couple_id, lv, idx, drawn_by) values (public.my_couple(), 'play', 1, auth.uid());
+insert into public.comments (round_id, author_id, body) values (:'r1', auth.uid(), 'Love this');
+select pg_temp.check((select count(*) = 1 from public.comments), 'you can comment once a card is revealed');
+do $$ begin
+  insert into public.comments (round_id, author_id, body) values ((select id from public.rounds where cardinality(answered_by) < 2 limit 1), auth.uid(), 'Peek');
+  raise exception 'FAILED: commented on a sealed card';
+exception when insufficient_privilege then raise notice 'ok: no comments before the reveal';
+end $$;
+do $$ begin
+  insert into public.comments (round_id, author_id, body) values ((select id from public.rounds where cardinality(answered_by) = 2 limit 1), 'aaaaaaaa-0000-0000-0000-000000000001', 'As you');
+  raise exception 'FAILED: commented as the partner';
+exception when insufficient_privilege then raise notice 'ok: you cannot comment as your partner';
+end $$;
+do $$ begin
+  insert into public.comments (round_id, author_id, body) values ((select id from public.rounds where cardinality(answered_by) = 2 limit 1), auth.uid(), 'Again');
+  raise exception 'FAILED: two comments on one card';
+exception when unique_violation then raise notice 'ok: one comment per person per card';
+end $$;
+reset role;
+select pg_temp.as_user(:A);
+select pg_temp.check((select body = 'Love this' from public.comments), 'your partner sees your comment');
+update public.comments set body = 'Changed' where author_id <> auth.uid();
+reset role;
+select pg_temp.check((select body = 'Love this' from public.comments), 'you cannot edit your partner''s comment');
+select pg_temp.as_user(:X);
+select pg_temp.check((select count(*) = 0 from public.comments), 'strangers see no comments');
+reset role;
+
 -- Reset pairing ---------------------------------------------------------------
 -- X (Eve, alone in her own couple) cannot touch A and B's pair; resetting only ever removes your own.
 select pg_temp.as_user(:X);

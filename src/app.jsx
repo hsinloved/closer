@@ -78,13 +78,14 @@ function useCouple(me) {
   const load = useCallback(async () => {
     const { data: member } = await supabase.from("members").select("couple_id, name").eq("user_id", me.id).maybeSingle();
     if (!member) return setState({ loading: false, member: null });
-    const [couple, members, rounds, answers] = await Promise.all([
+    const [couple, members, rounds, answers, comments] = await Promise.all([
       supabase.from("couples").select("*").eq("id", member.couple_id).single(),
       supabase.from("members").select("user_id, name").eq("couple_id", member.couple_id),
       supabase.from("rounds").select("*").eq("couple_id", member.couple_id).order("created_at", { ascending: false }),
-      supabase.from("answers").select("*")
+      supabase.from("answers").select("*"),
+      supabase.from("comments").select("*")
     ]);
-    setState({ loading: false, member, couple: couple.data, members: members.data || [], rounds: rounds.data || [], answers: answers.data || [] });
+    setState({ loading: false, member, couple: couple.data, members: members.data || [], rounds: rounds.data || [], answers: answers.data || [], comments: comments.data || [] });
   }, [me.id]);
 
   useEffect(() => { load(); }, [load]);
@@ -94,6 +95,7 @@ function useCouple(me) {
     const ch = supabase.channel(`couple-${coupleId}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "rounds", filter: `couple_id=eq.${coupleId}` }, load)
       .on("postgres_changes", { event: "*", schema: "public", table: "answers" }, load)
+      .on("postgres_changes", { event: "*", schema: "public", table: "comments" }, load)
       .on("postgres_changes", { event: "*", schema: "public", table: "members", filter: `couple_id=eq.${coupleId}` }, load)
       .subscribe();
     const onShow = () => document.visibilityState === "visible" && load();
@@ -114,7 +116,7 @@ function Home({ me }) {
   return <>
     <Frame right={partner && <span class="muted">with <span class="hand" style="font-size:22px;color:var(--accent-ink)">{partner.name}</span></span>}>
       {tab === "today" && <Today me={me} data={data} partner={partner} reload={reload} onSeen={() => setSeen(n => n + 1)} />}
-      {tab === "ours" && <Ours me={me} data={data} partner={partner} />}
+      {tab === "ours" && <Ours me={me} data={data} partner={partner} reload={reload} />}
       {tab === "settings" && <Settings me={me} data={data} partner={partner} reload={reload} />}
     </Frame>
     <nav class="tabs" aria-label="Sections">
@@ -179,7 +181,7 @@ function Today({ me, data, partner, reload, onSeen }) {
     <p class="card-q">Your first card is waiting.</p>
     <button class="btn btn-primary btn-block" onClick={() => draw(data, me).then(reload)}>Draw our first card</button>
   </div>;
-  return <Round key={current.id} round={current} me={me} partner={partner} answers={answers} couple={couple} today={today}
+  return <Round key={current.id} round={current} me={me} partner={partner} answers={answers} comments={data.comments} couple={couple} today={today}
     onDraw={() => draw(data, me).then(reload)} reload={reload} onSeen={onSeen} />;
 }
 
@@ -202,7 +204,7 @@ function Card({ round }) {
   </article>;
 }
 
-function Round({ round, me, partner, answers, couple, today, onDraw, reload, onSeen }) {
+function Round({ round, me, partner, answers, comments, couple, today, onDraw, reload, onSeen }) {
   const mine = answers.find(a => a.round_id === round.id && a.user_id === me.id);
   const theirs = answers.find(a => a.round_id === round.id && a.user_id === partner.user_id);
   const partnerDone = round.answered_by.includes(partner.user_id);
@@ -250,7 +252,9 @@ function Round({ round, me, partner, answers, couple, today, onDraw, reload, onS
     {revealed && !shown && <button class="btn btn-primary btn-block" onClick={reveal}>You've both answered. Reveal</button>}
     {revealed && shown && <div class="page">
       <Answer name={partner.name} body={theirs?.body} reveal />
+      <MyComment round={round} me={me} partner={partner} comments={comments} reload={reload} />
       <Answer name="You" body={mine.body} reveal />
+      <TheirComment round={round} partner={partner} comments={comments} />
     </div>}
 
     {(revealed || !couple.daily_enabled) && <button class="btn btn-block" onClick={onDraw}>{nextLabel}</button>}
@@ -262,9 +266,55 @@ function Answer({ name, body, reveal }) {
   return <div class={"answer" + (reveal ? " reveal" : "")}><span class="who">{name}</span><p>{body ?? "…"}</p></div>;
 }
 
+// ---------------------------------------------------------------- comments
+// Once a card is revealed, each of you can leave one comment on the other's answer. There is no reply box:
+// your partner reads your comment under their own answer, and can only leave their own on yours.
+function MyComment({ round, me, partner, comments, reload }) {
+  const mine = comments.find(c => c.round_id === round.id && c.author_id === me.id);
+  const [editing, setEditing] = useState(false), [text, setText] = useState(mine?.body || "");
+  const [busy, setBusy] = useState(false), [error, setError] = useState("");
+  const save = async e => {
+    e.preventDefault(); setBusy(true); setError("");
+    const body = text.trim();
+    const { error } = mine
+      ? await supabase.from("comments").update({ body }).eq("round_id", round.id).eq("author_id", me.id)
+      : await supabase.from("comments").insert({ round_id: round.id, author_id: me.id, body });
+    setBusy(false);
+    if (error) return setError(error.message);
+    if (!mine) notify("commented", round.id);
+    setEditing(false); reload();
+  };
+  const remove = async () => {
+    if (!window.confirm("Delete your comment?")) return;
+    const { error } = await supabase.from("comments").delete().eq("round_id", round.id).eq("author_id", me.id);
+    if (error) setError(error.message); else { setText(""); setEditing(false); reload(); }
+  };
+  if (editing) return <form onSubmit={save} class="comment-form">
+    <label class="sr-only" for={`c-${round.id}`}>Your comment on {partner.name}'s answer</label>
+    <textarea id={`c-${round.id}`} class="textarea comment-input" maxLength={1000} placeholder={`Say something to ${partner.name}…`} value={text} onInput={e => setText(e.target.value)} />
+    <div class="row">
+      <button class="btn btn-primary" disabled={busy || !text.trim()}>{busy ? "Saving…" : "Save comment"}</button>
+      <button type="button" class="btn btn-ghost" onClick={() => { setText(mine?.body || ""); setEditing(false); setError(""); }}>Cancel</button>
+    </div>
+    {error && <p class="error" role="alert">{error}</p>}
+  </form>;
+  if (mine) return <div class="comment">
+    <span class="who">You, to {partner.name}</span><p>{mine.body}</p>
+    <div class="comment-actions"><button class="link" onClick={() => setEditing(true)}>Edit</button><button class="link" onClick={remove}>Delete</button></div>
+    {error && <p class="error" role="alert">{error}</p>}
+  </div>;
+  return <button class="link comment-add" onClick={() => setEditing(true)}>Comment on {partner.name}'s answer</button>;
+}
+
+function TheirComment({ round, partner, comments }) {
+  const theirs = comments.find(c => c.round_id === round.id && c.author_id === partner.user_id);
+  if (!theirs) return null;
+  return <div class="comment"><span class="who">{partner.name}, to you</span><p>{theirs.body}</p></div>;
+}
+
 // ---------------------------------------------------------------- everything you've answered together
-function Ours({ me, data, partner }) {
-  const { rounds, answers } = data;
+function Ours({ me, data, partner, reload }) {
+  const { rounds, answers, comments } = data;
   if (!rounds.length) return <p class="note">Your cards will collect here.</p>;
   return <div class="history">{rounds.map(r => {
     const mine = answers.find(a => a.round_id === r.id && a.user_id === me.id);
@@ -273,7 +323,9 @@ function Ours({ me, data, partner }) {
       <span class="kicker">{r.lv === "wild" ? "Wild" : META[r.lv].name} · {r.day ? formatDay(r.day) : formatDay(r.created_at.slice(0, 10))}</span>
       <p class="entry-q">{cardText(r)}</p>
       {theirs && <Answer name={partner.name} body={theirs.body} />}
+      {theirs && mine && <MyComment round={r} me={me} partner={partner} comments={comments} reload={reload} />}
       {mine ? <Answer name="You" body={mine.body} /> : <p class="note">You haven't answered this one.</p>}
+      {theirs && mine && <TheirComment round={r} partner={partner} comments={comments} />}
       {mine && !theirs && partner && <p class="note">{r.answered_by.includes(partner.user_id) ? "Sealed" : `Waiting for ${partner.name}`}.</p>}
     </section>;
   })}</div>;

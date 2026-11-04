@@ -1,13 +1,13 @@
 import { admin, pushTo, json } from "./_lib.js";
 
-// Called by the app right after you answer or draw a card, join your partner (or to send yourself a test), with your sign-in token.
+// Called by the app right after you answer, comment on or draw a card, join your partner (or to send yourself a test), with your sign-in token.
 // Tells your partner, using only what the database confirms happened: nothing here trusts the request body
 // beyond which round it was.
 export default async function handler(req, res) {
   if (req.method !== "POST") return json(res, 405, { error: "POST only" });
   const token = (req.headers.authorization || "").replace(/^Bearer /, "");
   const { round_id: roundId, event } = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body || {});
-  if (!token || !["answered", "drawn", "joined", "test"].includes(event) || (["answered", "drawn"].includes(event) && !roundId)) return json(res, 400, { error: "token, event and round_id are required" });
+  if (!token || !["answered", "commented", "drawn", "joined", "test"].includes(event) || (["answered", "commented", "drawn"].includes(event) && !roundId)) return json(res, 400, { error: "token, event and round_id are required" });
 
   const db = admin();
   const { data: auth, error: authError } = await db.auth.getUser(token);
@@ -40,6 +40,12 @@ export default async function handler(req, res) {
     message = round.answered_by.includes(partner.user_id)
       ? { title: `${mine.name} answered too`, body: "You've both answered. Open Closer to reveal.", tag: `round-${round.id}` }
       : { title: `${mine.name} answered ${round.day ? "today's card" : "a card"}`, body: "Write yours to unlock it.", tag: `round-${round.id}` };
+  } else if (event === "commented") {
+    const { data: comment } = await db.from("comments").select("created_at").eq("round_id", round.id).eq("author_id", me).maybeSingle();
+    if (!comment) return json(res, 409, { error: "You have not commented on this card" });
+    // Only for a fresh comment, so the same one can't be used to ping your partner again and again.
+    if (Date.now() - new Date(comment.created_at) > 10 * 60 * 1000) return json(res, 409, { error: "Not a new comment" });
+    message = { title: `${mine.name} commented on your answer`, body: "Open Closer to read it.", tag: `comment-${round.id}` };
   } else {
     if (round.drawn_by !== me) return json(res, 409, { error: "You did not draw this card" });
     message = round.day
