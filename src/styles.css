@@ -98,3 +98,10 @@ a { color: var(--accent-ink); }
 .link { background: none; border: 0; padding: var(--s1) 0; color: var(--accent-ink); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; font-size: 15px; min-height: 44px; }
 .comment-add { align-self: flex-start; margin-left: var(--s4); }
 .comment-actions { display: flex; gap: var(--s4); }
+
+/* Ours: filter chips, and a tag on the cards you wrote yourselves */
+.chips { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.chip { min-height: 40px; padding: 0 var(--s3); border-radius: 999px; border: 1px solid var(--rule); background: transparent; color: var(--muted); font-size: 15px; cursor: pointer; display: inline-flex; align-items: center; gap: var(--s1); }
+.chip[aria-pressed="true"] { background: var(--surface); border-color: var(--accent-ink); color: var(--text); }
+.chip-count { font-size: 12px; min-width: 20px; height: 20px; border-radius: 999px; background: var(--accent-ink); color: var(--bg, #231f20); display: inline-flex; align-items: center; justify-content: center; padding: 0 6px; }
+.tag { display: inline-block; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--accent-ink); color: var(--accent-ink); letter-spacing: 0.06em; }
