@@ -127,3 +127,7 @@ a { color: var(--accent-ink); }
 .save .error { font-size: 14px; }
 .entry-head { display: flex; justify-content: space-between; align-items: center; gap: var(--s3); }
 .entry-head .save-btn { padding: 0; min-height: 32px; font-size: 14px; }
+
+/* What's new: a one-off note after an update */
+.news ul { margin: 0; padding-left: 1.1em; display: flex; flex-direction: column; gap: var(--s2); }
+.news li { line-height: 1.4; }

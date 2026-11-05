@@ -289,6 +289,23 @@ function QuestionPool({ data, me, partner }) {
   </section>;
 }
 
+// "What's new": shown once on each phone after an update, until you tap "Got it". Bump NEWS_ID for the next one.
+const NEWS_ID = "2026-11-05", NEWS_KEY = "closer:news-seen";
+function WhatsNew() {
+  const [seen, setSeen] = useState(() => { try { return localStorage.getItem(NEWS_KEY) === NEWS_ID; } catch { return true; } });
+  if (seen) return null;
+  const done = () => { try { localStorage.setItem(NEWS_KEY, NEWS_ID); } catch {} setSeen(true); };
+  return <section class="panel news" aria-label="What's new">
+    <h2>New in Closer</h2>
+    <ul>
+      <li><b>Nothing you write gets lost.</b> Half-written answers and comments are kept, even if you leave the app, switch tabs or tap a notification.</li>
+      <li><b>No skipping mid-answer.</b> Once one of you starts writing, the card can't be skipped. If it was skipped anyway, you can bring it back.</li>
+      <li><b>Save cards.</b> Tap ☆ Save on any card, and find it again under Saved in Ours.</li>
+    </ul>
+    <button class="btn btn-block" onClick={done}>Got it</button>
+  </section>;
+}
+
 function Today({ me, data, partner, reload, onSeen }) {
   const { couple, rounds, answers } = data;
   const today = localDay(couple.time_zone);
@@ -310,6 +327,7 @@ function Today({ me, data, partner, reload, onSeen }) {
     <QuestionPool data={data} me={me} partner={partner} />
   </div>;
   return <>
+    <WhatsNew />
     <SkippedDraft data={data} me={me} partner={partner} current={current} reload={reload} />
     <Round key={current.id} round={current} data={data} me={me} partner={partner} answers={answers} comments={data.comments} couple={couple} today={today}
     onDraw={() => draw(data, me).then(reload)} reload={reload} onSeen={onSeen} />
