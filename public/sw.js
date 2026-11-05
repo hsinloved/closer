@@ -17,7 +17,12 @@ self.addEventListener("push", e => {
 self.addEventListener("notificationclick", e => {
   e.notification.close();
   const url = new URL(e.notification.data?.url || "/", self.location.origin).href;
+  // If Closer is already open on that page, just bring it forward: navigating would reload it and throw away
+  // whatever you were typing. The app refreshes its cards by itself when it comes back into view.
+  const same = c => { const a = new URL(c.url), b = new URL(url); return a.origin === b.origin && a.pathname === b.pathname; };
   e.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(list => {
+    const here = list.find(same);
+    if (here) return here.focus();
     const open = list.find(c => c.url.startsWith(self.location.origin));
     return open ? open.focus().then(c => c.navigate ? c.navigate(url) : c) : self.clients.openWindow(url);
   }));

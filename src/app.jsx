@@ -72,23 +72,56 @@ function SignIn() {
   </div></Frame>;
 }
 
+// ---------------------------------------------------------------- drafts
+// Anything half-written (an answer, a comment, a question for the pool) is kept on this phone as you type, so
+// leaving the app, switching tabs, tapping a notification or the phone closing Closer in the background
+// loses nothing. A draft goes away once it's saved, cancelled or emptied, and after a month at the latest.
+const DRAFT_PREFIX = "closer:draft:", DRAFT_MS = 30 * 24 * 60 * 60 * 1000;
+function readDraft(key) {
+  try {
+    const d = JSON.parse(localStorage.getItem(DRAFT_PREFIX + key) || "null");
+    return d && typeof d.text === "string" && d.text.trim() && Date.now() - d.at < DRAFT_MS ? d.text : "";
+  } catch { return ""; }
+}
+function writeDraft(key, text) {
+  try { text && text.trim() ? localStorage.setItem(DRAFT_PREFIX + key, JSON.stringify({ text, at: Date.now() })) : localStorage.removeItem(DRAFT_PREFIX + key); } catch {}
+}
+function pruneDrafts() {
+  try {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(DRAFT_PREFIX) && !readDraft(k.slice(DRAFT_PREFIX.length))) localStorage.removeItem(k);
+    }
+  } catch {}
+}
+// Like useState for a text box, but kept as a draft under `key`. `saved` is what's already saved (an answer
+// you're editing): the draft is only kept while it differs. Returns [text, setText, discard, hadDraft].
+function useDraft(key, saved = "") {
+  const [initial] = useState(() => readDraft(key));
+  const [text, setTextState] = useState(initial || saved);
+  const setText = t => { setTextState(t); writeDraft(key, t === saved ? "" : t); };
+  const discard = () => { writeDraft(key, ""); setTextState(saved); };
+  return [text, setText, discard, Boolean(initial) && initial !== saved];
+}
+
 // ---------------------------------------------------------------- data for one couple, kept live
 function useCouple(me) {
   const [state, setState] = useState({ loading: true });
   const load = useCallback(async () => {
     const { data: member } = await supabase.from("members").select("couple_id, name").eq("user_id", me.id).maybeSingle();
     if (!member) return setState({ loading: false, member: null });
-    const [couple, members, rounds, answers, comments] = await Promise.all([
+    const [couple, members, rounds, answers, comments, writing] = await Promise.all([
       supabase.from("couples").select("*").eq("id", member.couple_id).single(),
       supabase.from("members").select("user_id, name").eq("couple_id", member.couple_id),
       supabase.from("rounds").select("*").eq("couple_id", member.couple_id).order("created_at", { ascending: false }),
       supabase.from("answers").select("*"),
-      supabase.from("comments").select("*")
+      supabase.from("comments").select("*"),
+      supabase.from("writing").select("*")
     ]);
     // Skipped cards stay out of sight, but are kept so the deck doesn't deal them again soon.
     setState({ loading: false, member, couple: couple.data, members: members.data || [],
       rounds: (rounds.data || []).filter(r => !r.skipped_at), skipped: (rounds.data || []).filter(r => r.skipped_at),
-      answers: answers.data || [], comments: comments.data || [] });
+      answers: answers.data || [], comments: comments.data || [], writing: writing.data || [] });
   }, [me.id]);
 
   useEffect(() => { load(); }, [load]);
@@ -99,6 +132,7 @@ function useCouple(me) {
       .on("postgres_changes", { event: "*", schema: "public", table: "rounds", filter: `couple_id=eq.${coupleId}` }, load)
       .on("postgres_changes", { event: "*", schema: "public", table: "answers" }, load)
       .on("postgres_changes", { event: "*", schema: "public", table: "comments" }, load)
+      .on("postgres_changes", { event: "*", schema: "public", table: "writing" }, load)
       .on("postgres_changes", { event: "*", schema: "public", table: "members", filter: `couple_id=eq.${coupleId}` }, load)
       .subscribe();
     const onShow = () => document.visibilityState === "visible" && load();
@@ -110,7 +144,7 @@ function useCouple(me) {
 
 function Home({ me }) {
   const [data, reload] = useCouple(me);
-  useEffect(() => { keepPushFresh(me.id); }, [me.id]);
+  useEffect(() => { keepPushFresh(me.id); pruneDrafts(); }, [me.id]);
   const [tab, setTab] = useState("today");
   const [, setSeen] = useState(0); // re-render the tab badge after a reveal
   if (data.loading) return <Frame />;
@@ -163,6 +197,11 @@ const SKIPS_PER_DAY = 3;
 // Skips the two of you have used today, counted at your midnight like the daily card.
 const skipsLeft = data => SKIPS_PER_DAY - (data.skipped || []).filter(r => localDay(data.couple.time_zone, new Date(r.skipped_at)).day === localDay(data.couple.time_zone).day).length;
 
+// While you have an unsealed answer started, the database holds a "writing" mark for you on the card, which keeps
+// your partner from skipping it. A mark older than the database's window (six hours) no longer counts.
+const WRITING_MS = 6 * 60 * 60 * 1000, WRITING_REFRESH_MS = 60 * 1000;
+const isWriting = (data, round, userId) => (data.writing || []).some(w => w.round_id === round.id && w.user_id === userId && Date.now() - new Date(w.at) < WRITING_MS);
+
 // Every card is dealt by the database: it may swap the suggested deck card for a question from your pool.
 async function draw(data, me, day) {
   const card = pickCard(usedCards(data));
@@ -174,17 +213,21 @@ async function draw(data, me, day) {
 
 // Skip a card nobody has answered yet: up to three a day between you. A question your partner wrote can't be
 // skipped; whoever wrote one can withdraw it (that uses a skip too).
-function SkipCard({ round, data, me, partner, reload }) {
+function SkipCard({ round, data, me, partner, reload, myDraft, onSkipped }) {
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   if (round.lv === "own" && writerOf(round) !== me.id) return null;
   const left = skipsLeft(data), withdraw = round.lv === "own";
+  // The database won't skip a card your partner has started answering; say so instead of offering it.
+  if (isWriting(data, round, partner.user_id)) return <p class="note skip">{partner.name} has started an answer to this card, so it can't be skipped.</p>;
   if (left <= 0) return <p class="note skip">No skips left today.</p>;
   const skip = async () => {
+    if (myDraft && !window.confirm("Skip this card? What you've written for it will be thrown away.")) return;
     setBusy(true); setError("");
     const card = pickCard(usedCards(data));
     const { data: fresh, error } = await supabase.rpc("skip_round", { p_round: round.id, p_lv: card.lv, p_idx: card.idx });
     setBusy(false);
-    if (error) return setError(error.message);
+    if (error) { setError(error.message); return reload(); }
+    onSkipped();
     notify("skipped", fresh.id);
     reload();
   };
@@ -200,7 +243,8 @@ function SkipCard({ round, data, me, partner, reload }) {
 const POOL_MAX = 5;
 function QuestionPool({ data, me, partner }) {
   const [mine, setMine] = useState([]), [counts, setCounts] = useState({});
-  const [open, setOpen] = useState(false), [text, setText] = useState("");
+  const [text, setText, , hadDraft] = useDraft("pool");
+  const [open, setOpen] = useState(hadDraft);
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const load = useCallback(async () => {
     const [{ data: qs }, { data: cs }] = await Promise.all([
@@ -234,7 +278,7 @@ function QuestionPool({ data, me, partner }) {
       <div class="field"><label for="own-q">A question for you both</label>
         <textarea id="own-q" class="textarea" maxLength={300} placeholder="What do you want to ask?" value={text} onInput={e => setText(e.target.value)} /></div>
       <button class="btn btn-primary btn-block" disabled={busy || !text.trim()}>{busy ? "Adding…" : "Add to the pool"}</button>
-      <button type="button" class="btn btn-ghost" onClick={() => { setOpen(false); setError(""); }}>Cancel</button>
+      <button type="button" class="btn btn-ghost" onClick={() => { setText(""); setOpen(false); setError(""); }}>Cancel</button>
     </form>
       : full ? <p class="note">You have {POOL_MAX} questions waiting. Add more once one has come up.</p>
       : <button class="btn btn-ghost btn-block" onClick={() => setOpen(true)}>Add a question ({mine.length} of {POOL_MAX})</button>}
@@ -263,10 +307,51 @@ function Today({ me, data, partner, reload, onSeen }) {
     <QuestionPool data={data} me={me} partner={partner} />
   </div>;
   return <>
+    <SkippedDraft data={data} me={me} partner={partner} current={current} reload={reload} />
     <Round key={current.id} round={current} data={data} me={me} partner={partner} answers={answers} comments={data.comments} couple={couple} today={today}
     onDraw={() => draw(data, me).then(reload)} reload={reload} onSeen={onSeen} />
     <QuestionPool data={data} me={me} partner={partner} />
   </>;
+}
+
+// Your partner skipped a card you'd started answering (before the database could stop them, or after your
+// writing mark had gone stale). The draft is still on this phone: offer to bring the card back, copy it, or let it go.
+function SkippedDraft({ data, me, partner, current, reload }) {
+  const [busy, setBusy] = useState(false), [error, setError] = useState(""), [copied, setCopied] = useState(false);
+  const [, rerender] = useState(0);
+  const r = (data.skipped || []).filter(s => s.skipped_by !== me.id && readDraft(`answer:${s.id}`))
+    .sort((a, b) => b.skipped_at.localeCompare(a.skipped_at))[0];
+  if (!r) return null;
+  const key = `answer:${r.id}`, draft = readDraft(key);
+  const withdrawn = r.lv === "own" && writerOf(r) === r.skipped_by; // they took their own question back
+  const canRestore = !withdrawn && current && r.replaced_by === current.id && current.answered_by.length === 0;
+  const restore = async () => {
+    setBusy(true); setError("");
+    const { error } = await supabase.rpc("restore_round", { p_round: r.id });
+    setBusy(false);
+    if (error) { setError(error.message); return reload(); }
+    notify("restored", r.id);
+    reload();
+  };
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(draft); setCopied(true); }
+    catch { setError("Couldn't copy it. Select the text and copy it yourself."); }
+  };
+  const discard = () => {
+    if (!window.confirm("Throw this draft away?")) return;
+    writeDraft(key, ""); rerender(n => n + 1);
+  };
+  return <section class="panel">
+    <p class="note"><b>{partner.name} {withdrawn ? "took back the question" : "skipped the card"} you were answering.</b> Your draft is kept here.</p>
+    <p class="entry-q">{cardText(r)}</p>
+    <div class="answer"><span class="who">Your draft</span><p>{draft}</p></div>
+    <div class="row">
+      {canRestore && <button class="btn btn-primary" disabled={busy} onClick={restore}>{busy ? "Bringing it back…" : "Bring that card back"}</button>}
+      <button class="btn" onClick={copy}>{copied ? "Copied" : "Copy my draft"}</button>
+      <button class="btn btn-ghost" onClick={discard}>Discard</button>
+    </div>
+    {error && <p class="error" role="alert">{error}</p>}
+  </section>;
 }
 
 function Waiting({ code }) {
@@ -298,11 +383,23 @@ function Round({ round, data, me, partner, answers, comments, couple, today, onD
   const theirs = answers.find(a => a.round_id === round.id && a.user_id === partner.user_id);
   const partnerDone = round.answered_by.includes(partner.user_id);
   const revealed = Boolean(mine && partnerDone);
-  const [editing, setEditing] = useState(!mine);
-  const [text, setText] = useState(mine?.body || "");
+  const draftKey = `answer:${round.id}`;
+  const [text, setText, , hadDraft] = useDraft(draftKey, mine?.body || "");
+  const [editing, setEditing] = useState(!mine || hadDraft);
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const [shown, setShown] = useState(() => seenReveal(round.id));
   useEffect(() => { if (!mine) setEditing(true); }, [mine]);
+
+  // Tell the database you're writing (so your partner can't skip the card), refreshed while you type, and
+  // cleared if you empty the box.
+  const marked = useRef({ on: false, at: 0 });
+  useEffect(() => {
+    if (mine) return;
+    const on = Boolean(text.trim()), last = marked.current;
+    if (on === last.on && (!on || Date.now() - last.at < WRITING_REFRESH_MS)) return;
+    marked.current = { on, at: Date.now() };
+    supabase.rpc("mark_writing", { p_round: round.id, p_on: on });
+  }, [text, mine]);
 
   const save = async e => {
     e.preventDefault(); setBusy(true); setError("");
@@ -311,8 +408,9 @@ function Round({ round, data, me, partner, answers, comments, couple, today, onD
       ? await supabase.from("answers").update({ body }).eq("round_id", round.id).eq("user_id", me.id)
       : await supabase.from("answers").insert({ round_id: round.id, user_id: me.id, body });
     setBusy(false);
-    if (error) return setError(error.message);
-    if (!mine) notify("answered", round.id);
+    if (error) return setError(error.message); // the draft stays, so nothing is lost
+    writeDraft(draftKey, "");
+    if (!mine) { notify("answered", round.id); supabase.rpc("mark_writing", { p_round: round.id, p_on: false }); }
     setEditing(false); reload();
   };
   const reveal = () => { markSeen(round.id); setShown(true); onSeen(); };
@@ -324,7 +422,8 @@ function Round({ round, data, me, partner, answers, comments, couple, today, onD
     <p class="status"><span class={"dot" + (mine ? " on" : "")} />You {mine ? "answered" : "haven't answered yet"}
       <span class={"dot" + (partnerDone ? " on" : "")} style="margin-left:var(--s3)" /><span><span class="hand" style="font-size:20px">{partner.name}</span> {partnerDone ? "answered" : "hasn't yet"}</span></p>
 
-    {!mine && !partnerDone && <SkipCard round={round} data={data} me={me} partner={partner} reload={reload} />}
+    {!mine && !partnerDone && <SkipCard round={round} data={data} me={me} partner={partner} reload={reload}
+      myDraft={Boolean(text.trim())} onSkipped={() => writeDraft(draftKey, "")} />}
 
     {editing && !revealed && <form onSubmit={save} class="page">
       <label class="sr-only" for="answer">Your answer</label>
@@ -362,7 +461,9 @@ function Answer({ name, body, reveal }) {
 // your partner reads your comment under their own answer, and can only leave their own on yours.
 function MyComment({ round, me, partner, comments, reload }) {
   const mine = comments.find(c => c.round_id === round.id && c.author_id === me.id);
-  const [editing, setEditing] = useState(false), [text, setText] = useState(mine?.body || "");
+  const draftKey = `comment:${round.id}`;
+  const [text, setText, , hadDraft] = useDraft(draftKey, mine?.body || "");
+  const [editing, setEditing] = useState(hadDraft);
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const save = async e => {
     e.preventDefault(); setBusy(true); setError("");
@@ -372,6 +473,7 @@ function MyComment({ round, me, partner, comments, reload }) {
       : await supabase.from("comments").insert({ round_id: round.id, author_id: me.id, body });
     setBusy(false);
     if (error) return setError(error.message);
+    writeDraft(draftKey, "");
     if (!mine) notify("commented", round.id);
     setEditing(false); reload();
   };

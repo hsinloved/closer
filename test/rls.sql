@@ -267,6 +267,102 @@ exception when others then
 end $$;
 reset role;
 
+-- Writing marks and bringing a skipped card back ------------------------------
+update public.rounds set skipped_at = skipped_at - interval '2 days' where skipped_at is not null; -- today's skips back
+select pg_temp.as_user(:A);
+insert into public.rounds (couple_id, lv, idx, day, drawn_by) values (public.my_couple(), 'know', 7, '2026-12-05', auth.uid()) returning id as w1 \gset
+reset role;
+select set_config('my.w1', :'w1', false);
+select pg_temp.as_user(:B);
+select public.mark_writing(:'w1', true);
+reset role;
+select pg_temp.as_user(:A);
+select pg_temp.check((select count(*) = 1 from public.writing where round_id = :'w1'), 'you can see that your partner is writing');
+do $$ begin
+  perform public.skip_round(current_setting('my.w1')::uuid, 'know', 8::smallint);
+  raise exception 'FAILED: skipped while the partner was writing';
+exception when others then
+  if sqlerrm like 'FAILED%' then raise; end if;
+  if sqlerrm <> 'Your partner has started an answer to this card' then raise exception 'FAILED: unexpected error %', sqlerrm; end if;
+  raise notice 'ok: no skipping while your partner is writing an answer';
+end $$;
+reset role;
+select pg_temp.as_user(:X);
+select pg_temp.check((select count(*) = 0 from public.writing), 'strangers cannot see who is writing');
+do $$ begin
+  perform public.mark_writing(current_setting('my.w1')::uuid, true);
+  raise exception 'FAILED: a stranger marked writing';
+exception when others then
+  if sqlerrm like 'FAILED%' then raise; end if;
+  raise notice 'ok: strangers cannot mark your cards';
+end $$;
+reset role;
+select pg_temp.as_user(:B);
+select public.mark_writing(:'w1', false);
+select pg_temp.check((select count(*) = 0 from public.writing where round_id = :'w1'), 'clearing your draft clears the mark');
+select public.mark_writing(:'w1', true);
+reset role;
+update public.writing set at = now() - interval '7 hours'; -- an old, abandoned mark
+select pg_temp.as_user(:A);
+select (public.skip_round(:'w1', 'know', 8::smallint)).id as w2 \gset
+select pg_temp.check((select replaced_by = :'w2' from public.rounds where id = :'w1'), 'an old mark does not hold off a skip, and the skip remembers its replacement');
+select pg_temp.check((select count(*) = 0 from public.writing where round_id = :'w1'), 'a skip clears the marks on the skipped card');
+do $$ begin
+  perform public.restore_round(current_setting('my.w1')::uuid);
+  raise exception 'FAILED: restored your own skip';
+exception when others then
+  if sqlerrm like 'FAILED%' then raise; end if;
+  raise notice 'ok: you cannot bring back a card you skipped yourself';
+end $$;
+reset role;
+select pg_temp.as_user(:B);
+do $$ begin
+  insert into public.answers (round_id, user_id, body) values (current_setting('my.w1')::uuid, auth.uid(), 'too late');
+  raise exception 'FAILED: answered a skipped card';
+exception when insufficient_privilege then raise notice 'ok: no answers on a skipped card';
+end $$;
+reset role;
+select pg_temp.as_user(:X);
+do $$ begin
+  perform public.restore_round(current_setting('my.w1')::uuid);
+  raise exception 'FAILED: a stranger restored';
+exception when others then
+  if sqlerrm like 'FAILED%' then raise; end if;
+  raise notice 'ok: strangers cannot bring back your cards';
+end $$;
+reset role;
+select count(*) as skips_before from public.rounds where skipped_at > now() - interval '1 hour' \gset
+select pg_temp.as_user(:B);
+select pg_temp.check((public.restore_round(:'w1')).day = '2026-12-05', 'your partner''s skip can be undone, and the card gets its day back');
+reset role;
+select pg_temp.check((select skipped_at is null and replaced_by is null and restored_by = :B from public.rounds where id = :'w1'), 'the restored card is back in play');
+select pg_temp.check((select skipped_at is not null and day is null from public.rounds where id = :'w2'), 'the replacement is set aside');
+select pg_temp.check((select count(*) = :skips_before from public.rounds where skipped_at > now() - interval '1 hour'), 'bringing a card back leaves the skip count alone');
+select pg_temp.as_user(:B);
+do $$ begin
+  perform public.restore_round(current_setting('my.w1')::uuid);
+  raise exception 'FAILED: restored twice';
+exception when others then
+  if sqlerrm like 'FAILED%' then raise; end if;
+  raise notice 'ok: a card in play cannot be restored';
+end $$;
+reset role;
+-- Once the replacement has an answer, the skipped card stays skipped.
+select pg_temp.as_user(:A);
+select (public.skip_round(:'w1', 'know', 9::smallint)).id as w3 \gset
+insert into public.answers (round_id, user_id, body) values (:'w3', auth.uid(), 'mine');
+reset role;
+select pg_temp.as_user(:B);
+do $$ begin
+  perform public.restore_round(current_setting('my.w1')::uuid);
+  raise exception 'FAILED: restored over an answered card';
+exception when others then
+  if sqlerrm like 'FAILED%' then raise; end if;
+  raise notice 'ok: no bringing a card back once its replacement has an answer';
+end $$;
+reset role;
+delete from public.rounds where id in (:'w1', :'w2', :'w3');
+
 -- Question pool -----------------------------------------------------------------
 select setseed(0.42);
 select pg_temp.as_user(:A);

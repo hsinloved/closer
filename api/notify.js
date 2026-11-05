@@ -1,13 +1,13 @@
 import { admin, pushTo, json } from "./_lib.js";
 
-// Called by the app right after you answer, comment on, draw or skip a card, join your partner (or to send yourself a test), with your sign-in token.
+// Called by the app right after you answer, comment on, draw, skip or bring back a card, join your partner (or to send yourself a test), with your sign-in token.
 // Tells your partner, using only what the database confirms happened: nothing here trusts the request body
 // beyond which round it was.
 export default async function handler(req, res) {
   if (req.method !== "POST") return json(res, 405, { error: "POST only" });
   const token = (req.headers.authorization || "").replace(/^Bearer /, "");
   const { round_id: roundId, event } = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body || {});
-  if (!token || !["answered", "commented", "drawn", "skipped", "joined", "test"].includes(event) || (["answered", "commented", "drawn", "skipped"].includes(event) && !roundId)) return json(res, 400, { error: "token, event and round_id are required" });
+  if (!token || !["answered", "commented", "drawn", "skipped", "restored", "joined", "test"].includes(event) || (["answered", "commented", "drawn", "skipped", "restored"].includes(event) && !roundId)) return json(res, 400, { error: "token, event and round_id are required" });
 
   const db = admin();
   const { data: auth, error: authError } = await db.auth.getUser(token);
@@ -27,7 +27,7 @@ export default async function handler(req, res) {
     return json(res, 200, await pushTo(db, [partner.user_id], { title: `${mine.name} joined you on Closer`, body: "You're paired. Open Closer for your first card.", tag: "paired", url: "/" }));
   }
 
-  const { data: round } = await db.from("rounds").select("id, couple_id, lv, day, drawn_by, written_by, answered_by").eq("id", roundId).single();
+  const { data: round } = await db.from("rounds").select("id, couple_id, lv, day, drawn_by, written_by, answered_by, restored_by, restored_at").eq("id", roundId).single();
   if (!round) return json(res, 404, { error: "No such card" });
   const { data: members } = await db.from("members").select("user_id, name").eq("couple_id", round.couple_id);
   const mine = members?.find(m => m.user_id === me), partner = members?.find(m => m.user_id !== me);
@@ -49,6 +49,10 @@ export default async function handler(req, res) {
     message = skippedNow[0].lv === "own"
       ? { title: `${mine.name} swapped their question`, body: "There's a new card instead. Open Closer to see it.", tag: `round-${round.id}` }
       : { title: `${mine.name} skipped the card`, body: "Here's a new one. Open Closer to see it.", tag: `round-${round.id}` };
+  } else if (event === "restored") {
+    // You brought back a card your partner skipped, in the last few minutes.
+    if (round.restored_by !== me || Date.now() - new Date(round.restored_at) > 10 * 60 * 1000) return json(res, 409, { error: "You did not just bring this card back" });
+    message = { title: `${mine.name} brought the card back`, body: "They'd started answering it. Open Closer to see it.", tag: `round-${round.id}` };
   } else if (event === "commented") {
     const { data: comment } = await db.from("comments").select("created_at").eq("round_id", round.id).eq("author_id", me).maybeSingle();
     if (!comment) return json(res, 409, { error: "You have not commented on this card" });
