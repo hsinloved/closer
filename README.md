@@ -1,6 +1,6 @@
 # Closer
 
-**A card game for two.** Questions to get to know each other, play a little, and slowly go deeper.
+**A dating app made for you and your partner.** Questions to get to know each other, play a little, and slowly go deeper.
 
 **Two ways to play.** Answer one card a day from your own phones: answers stay sealed until you've both
 written, and the other gets a notification. Or sit together and play the in-person game at `/together.html`.
