@@ -163,9 +163,10 @@ const SKIPS_PER_DAY = 3;
 // Skips the two of you have used today, counted at your midnight like the daily card.
 const skipsLeft = data => SKIPS_PER_DAY - (data.skipped || []).filter(r => localDay(data.couple.time_zone, new Date(r.skipped_at)).day === localDay(data.couple.time_zone).day).length;
 
+// Every card is dealt by the database: it may swap the suggested deck card for a question from your pool.
 async function draw(data, me, day) {
   const card = pickCard(usedCards(data));
-  const { data: round, error } = await supabase.from("rounds").insert({ couple_id: data.member.couple_id, drawn_by: me.id, day: day || null, ...card }).select().single();
+  const { data: round, error } = await supabase.rpc("deal_card", { p_couple: data.member.couple_id, p_lv: card.lv, p_idx: card.idx, p_day: day || null });
   if (error) return null; // someone else dealt today's card a moment ago: the reload picks it up
   notify("drawn", round.id);
   return round;
@@ -175,7 +176,7 @@ async function draw(data, me, day) {
 // skipped; whoever wrote one can withdraw it (that uses a skip too).
 function SkipCard({ round, data, me, partner, reload }) {
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
-  if (round.lv === "own" && round.drawn_by !== me.id) return null;
+  if (round.lv === "own" && writerOf(round) !== me.id) return null;
   const left = skipsLeft(data), withdraw = round.lv === "own";
   if (left <= 0) return <p class="note skip">No skips left today.</p>;
   const skip = async () => {
@@ -194,30 +195,51 @@ function SkipCard({ round, data, me, partner, reload }) {
   </div>;
 }
 
-// Write your own question instead of drawing one. It becomes the next card for both of you.
-function WriteCard({ data, me, partner, onDone }) {
+// Your own questions go into a shared pool and turn up at random among the deck's cards (see deal_card).
+// You see and can change your own waiting questions; of your partner's you only see how many are waiting.
+const POOL_MAX = 5;
+function QuestionPool({ data, me, partner }) {
+  const [mine, setMine] = useState([]), [counts, setCounts] = useState({});
   const [open, setOpen] = useState(false), [text, setText] = useState("");
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
-  if (!open) return <button class="btn btn-ghost btn-block" onClick={() => setOpen(true)}>Write our own question</button>;
-  const send = async e => {
+  const load = useCallback(async () => {
+    const [{ data: qs }, { data: cs }] = await Promise.all([
+      supabase.from("pool_questions").select("id, question, created_at").is("dealt_at", null).order("created_at"),
+      supabase.rpc("pool_counts")
+    ]);
+    setMine(qs || []);
+    setCounts(Object.fromEntries((cs || []).map(c => [c.author_id, c.waiting])));
+  }, []);
+  useEffect(() => { load(); }, [load, data.rounds.length]);
+
+  const add = async e => {
     e.preventDefault(); setBusy(true); setError("");
-    // The index only seeds the card's picture, so each of your questions gets a different one.
-    const idx = data.rounds.filter(r => r.lv === "own").length % 30000;
-    const { data: round, error } = await supabase.from("rounds")
-      .insert({ couple_id: data.member.couple_id, drawn_by: me.id, lv: "own", idx, question: text.trim() }).select().single();
+    const { error } = await supabase.from("pool_questions").insert({ couple_id: data.member.couple_id, author_id: me.id, question: text.trim() });
     setBusy(false);
     if (error) return setError(error.message);
-    notify("drawn", round.id);
-    setText(""); setOpen(false); onDone();
+    setText(""); setOpen(false); load();
   };
-  return <form onSubmit={send} class="page">
-    <div class="field"><label for="own-q">A question{partner ? ` for you and ${partner.name}` : " for you both"}</label>
-      <textarea id="own-q" class="textarea" maxLength={300} placeholder="What do you want to ask?" value={text} onInput={e => setText(e.target.value)} /></div>
-    <p class="note">You'll both answer it, sealed until you've both written, like any card.</p>
-    <button class="btn btn-primary btn-block" disabled={busy || !text.trim()}>{busy ? "Sending…" : "Make it our next card"}</button>
-    <button type="button" class="btn btn-ghost" onClick={() => { setOpen(false); setError(""); }}>Cancel</button>
+  const remove = async id => {
+    if (!window.confirm("Take this question out of the pool?")) return;
+    await supabase.from("pool_questions").delete().eq("id", id); load();
+  };
+  const theirs = partner ? counts[partner.user_id] || 0 : 0, full = mine.length >= POOL_MAX;
+
+  return <section class="pool">
+    <div class="pool-head"><h2>Our question pool</h2>
+      <span class="note">{partner ? `${partner.name}: ${theirs} waiting` : ""}</span></div>
+    <p class="note">Questions you add are shuffled in with the deck and turn up now and then, taking turns between you. {partner ? `${partner.name} won't see yours until one comes up.` : ""}</p>
+    {mine.length > 0 && <ol class="pool-list">{mine.map(q => <li><span>{q.question}</span><button class="link" onClick={() => remove(q.id)}>Remove</button></li>)}</ol>}
+    {open ? <form onSubmit={add} class="page">
+      <div class="field"><label for="own-q">A question for you both</label>
+        <textarea id="own-q" class="textarea" maxLength={300} placeholder="What do you want to ask?" value={text} onInput={e => setText(e.target.value)} /></div>
+      <button class="btn btn-primary btn-block" disabled={busy || !text.trim()}>{busy ? "Adding…" : "Add to the pool"}</button>
+      <button type="button" class="btn btn-ghost" onClick={() => { setOpen(false); setError(""); }}>Cancel</button>
+    </form>
+      : full ? <p class="note">You have {POOL_MAX} questions waiting. Add more once one has come up.</p>
+      : <button class="btn btn-ghost btn-block" onClick={() => setOpen(true)}>Add a question ({mine.length} of {POOL_MAX})</button>}
     {error && <p class="error" role="alert">{error}</p>}
-  </form>;
+  </section>;
 }
 
 function Today({ me, data, partner, reload, onSeen }) {
@@ -238,10 +260,13 @@ function Today({ me, data, partner, reload, onSeen }) {
   if (!current) return <div class="center">
     <p class="card-q">Your first card is waiting.</p>
     <button class="btn btn-primary btn-block" onClick={() => draw(data, me).then(reload)}>Draw our first card</button>
-    <WriteCard data={data} me={me} partner={partner} onDone={reload} />
+    <QuestionPool data={data} me={me} partner={partner} />
   </div>;
-  return <Round key={current.id} round={current} data={data} me={me} partner={partner} answers={answers} comments={data.comments} couple={couple} today={today}
-    onDraw={() => draw(data, me).then(reload)} reload={reload} onSeen={onSeen} />;
+  return <>
+    <Round key={current.id} round={current} data={data} me={me} partner={partner} answers={answers} comments={data.comments} couple={couple} today={today}
+    onDraw={() => draw(data, me).then(reload)} reload={reload} onSeen={onSeen} />
+    <QuestionPool data={data} me={me} partner={partner} />
+  </>;
 }
 
 function Waiting({ code }) {
@@ -253,7 +278,9 @@ function Waiting({ code }) {
 }
 
 // Who wrote a card of your own, as the card's label.
-const ownLabel = (round, me, partner) => round.drawn_by === me?.id ? "Written by you" : `Written by ${partner?.name || "your partner"}`;
+// Who wrote a question card: written_by for pool questions, drawn_by for the ones written before the pool.
+const writerOf = round => round.written_by || round.drawn_by;
+const ownLabel = (round, me, partner) => writerOf(round) === me?.id ? "Written by you" : `Written by ${partner?.name || "your partner"}`;
 
 function Card({ round, me, partner }) {
   const wild = round.lv === "wild", m = round.lv === "own" ? { label: ownLabel(round, me, partner) } : wild ? WILD : META[round.lv];
@@ -321,10 +348,7 @@ function Round({ round, data, me, partner, answers, comments, couple, today, onD
       <TheirComment round={round} partner={partner} comments={comments} />
     </div>}
 
-    {(revealed || !couple.daily_enabled) && <>
-      <button class="btn btn-block" onClick={onDraw}>{nextLabel}</button>
-      <WriteCard data={data} me={me} partner={partner} onDone={reload} />
-    </>}
+    {(revealed || !couple.daily_enabled) && <button class="btn btn-block" onClick={onDraw}>{nextLabel}</button>}
     {revealed && nextDaily && <p class="note">Tomorrow's card arrives at {String(couple.daily_hour).padStart(2, "0")}:00.</p>}
   </>;
 }

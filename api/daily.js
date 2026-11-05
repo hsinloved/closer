@@ -19,7 +19,8 @@ export default async function handler(req, res) {
     const { data: past } = await db.from("rounds").select("lv, idx, day").eq("couple_id", c.id);
     if (past.some(r => r.day === day)) continue;
     const card = pickCard(past.map(r => r.lv + ":" + r.idx));
-    const { error: insertError } = await db.from("rounds").insert({ couple_id: c.id, day, ...card });
+    // deal_card may swap the deck card for a question from your pool.
+    const { error: insertError } = await db.rpc("deal_card", { p_couple: c.id, p_lv: card.lv, p_idx: card.idx, p_day: day });
     if (insertError) continue; // the app dealt it a moment ago (unique couple + day)
     const { data: members } = await db.from("members").select("user_id").eq("couple_id", c.id);
     await pushTo(db, members.map(m => m.user_id), { title: "Today's card is here", body: "Open Closer to see it.", tag: `day-${day}`, url: "/" });
