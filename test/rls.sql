@@ -184,16 +184,18 @@ select pg_temp.check((select count(*) = 0 from public.comments), 'strangers see 
 reset role;
 
 -- Your own questions -------------------------------------------------------
-select pg_temp.as_user(:A);
-insert into public.rounds (couple_id, lv, idx, question, drawn_by) values (public.my_couple(), 'own', 0, 'What made you smile today?', auth.uid());
-reset role;
+-- Written cards now come from the pool (see below); here one is set up as deal_card would make it.
+insert into public.rounds (couple_id, lv, idx, question, drawn_by, written_by)
+  select couple_id, 'own', 0, 'What made you smile today?', user_id, user_id from public.members where user_id = :A;
 select pg_temp.as_user(:B);
 select pg_temp.check((select question = 'What made you smile today?' from public.rounds where lv = 'own'), 'your partner sees the question you wrote');
+reset role;
 do $$ begin
-  insert into public.rounds (couple_id, lv, idx, drawn_by) values (public.my_couple(), 'own', 0, auth.uid());
+  insert into public.rounds (couple_id, lv, idx, drawn_by) select couple_id, 'own', 0, user_id from public.members where user_id = 'bbbbbbbb-0000-0000-0000-000000000002';
   raise exception 'FAILED: own card without a question';
 exception when check_violation then raise notice 'ok: a card of your own needs a question';
 end $$;
+select pg_temp.as_user(:B);
 do $$ begin
   insert into public.rounds (couple_id, lv, idx, question, drawn_by) values (public.my_couple(), 'own', 0, 'Hi', 'aaaaaaaa-0000-0000-0000-000000000001');
   raise exception 'FAILED: wrote a question as the partner';
@@ -237,7 +239,10 @@ exception when others then
 end $$;
 reset role;
 select pg_temp.as_user(:B);
-insert into public.rounds (couple_id, lv, idx, question, drawn_by) values (public.my_couple(), 'own', 1, 'Only for you', auth.uid()) returning id as q1 \gset
+reset role;
+insert into public.rounds (couple_id, lv, idx, question, drawn_by, written_by)
+  select couple_id, 'own', 1, 'Only for you', user_id, user_id from public.members where user_id = :B returning id as q1 \gset
+select pg_temp.as_user(:B);
 reset role;
 select set_config('my.q1', :'q1', false);
 select pg_temp.as_user(:A);
@@ -261,6 +266,78 @@ exception when others then
   raise notice 'ok: strangers cannot skip your cards';
 end $$;
 reset role;
+
+-- Question pool -----------------------------------------------------------------
+select setseed(0.42);
+select pg_temp.as_user(:A);
+insert into public.pool_questions (couple_id, author_id, question)
+  select public.my_couple(), auth.uid(), 'A asks ' || g from generate_series(1, 5) g;
+do $$ begin
+  insert into public.pool_questions (couple_id, author_id, question) values (public.my_couple(), auth.uid(), 'A asks 6');
+  raise exception 'FAILED: a sixth waiting question';
+exception when others then
+  if sqlerrm like 'FAILED%' then raise; end if;
+  raise notice 'ok: five waiting questions each (%)', sqlerrm;
+end $$;
+do $$ begin
+  insert into public.rounds (couple_id, lv, idx, question, drawn_by) values (public.my_couple(), 'own', 0, 'Straight in', auth.uid());
+  raise exception 'FAILED: own question inserted as a card directly';
+exception when insufficient_privilege then raise notice 'ok: your own questions only arrive through the pool';
+end $$;
+reset role;
+select pg_temp.as_user(:B);
+insert into public.pool_questions (couple_id, author_id, question) values (public.my_couple(), auth.uid(), 'B asks 1'), (public.my_couple(), auth.uid(), 'B asks 2');
+select pg_temp.check((select count(*) = 2 from public.pool_questions), 'you only see your own waiting questions');
+select pg_temp.check((select waiting = 5 from public.pool_counts() where author_id = :A), 'you see how many your partner has waiting');
+update public.pool_questions set question = 'hijack' where author_id = :A;
+reset role;
+select pg_temp.check((select count(*) = 0 from public.pool_questions where question = 'hijack'), 'you cannot edit your partner''s questions');
+
+-- Deal 60 cards as B and look at the sequence.
+select pg_temp.as_user(:B);
+select set_config('my.couple', public.my_couple()::text, false);
+-- One deal per statement (and so per transaction), as in the app.
+select set_config('my.t0', clock_timestamp()::text, false);
+select format('select public.deal_card(%L, %L, %s::smallint)', current_setting('my.couple'), 'know', i % 40) from generate_series(1, 60) i \gexec
+reset role;
+create temp table dealt as
+  select r.* from public.rounds r where r.couple_id = current_setting('my.couple')::uuid and r.created_at >= current_setting('my.t0')::timestamptz;
+select pg_temp.check((select count(*) from dealt) = 60, 'sixty cards dealt');
+select pg_temp.check((select count(*) from dealt where written_by is not null) between 5 and 7, 'pool questions are mixed in with deck cards');
+select pg_temp.check((select count(*) from public.pool_questions where dealt_at is not null) = (select count(*) from dealt where written_by is not null), 'each pool card used up a waiting question');
+select pg_temp.check(not exists (
+  select 1 from (select written_by, lag(written_by) over (order by created_at) prev from dealt) t
+   where t.written_by is not null and t.prev is not null), 'never two pool questions in a row');
+select pg_temp.check((select count(*) filter (where written_by = :B) = 2 and count(*) filter (where written_by = :A) = 2
+  from (select written_by from dealt where written_by is not null order by created_at limit 4) f), 'turn-taking: the first four pool cards are two each');
+select pg_temp.check((select count(*) = 0 from public.pool_questions where dealt_at is not null and dealt_round is null), 'each dealt question points to its card');
+
+-- A stranger can't deal into your couple, and B can't skip a question A wrote.
+select pg_temp.as_user(:X);
+do $$ begin
+  perform public.deal_card(current_setting('my.couple')::uuid, 'know', 0::smallint);
+  raise exception 'FAILED: a stranger dealt your card';
+exception when others then
+  if sqlerrm like 'FAILED%' then raise; end if;
+  raise notice 'ok: strangers cannot deal your cards';
+end $$;
+reset role;
+select set_config('my.apool', (select id::text from public.rounds where written_by = :A and cardinality(answered_by) = 0 and skipped_at is null order by created_at desc limit 1), false);
+select pg_temp.as_user(:B);
+do $$ begin
+  perform public.skip_round(current_setting('my.apool')::uuid, 'know', 0::smallint);
+  raise exception 'FAILED: skipped a pool question the partner wrote';
+exception when others then
+  if sqlerrm like 'FAILED%' then raise; end if;
+  raise notice 'ok: you cannot skip a pool question your partner wrote';
+end $$;
+reset role;
+-- The daily job deals as the server.
+set role service_role;
+select set_config('request.jwt.claim.sub', '', false), set_config('request.jwt.claim.role', 'service_role', false);
+select pg_temp.check((public.deal_card(current_setting('my.couple')::uuid, 'deep', 3::smallint, '2027-01-01')).day = '2027-01-01', 'the daily job can deal');
+reset role;
+select set_config('request.jwt.claim.role', '', false);
 
 -- Reset pairing ---------------------------------------------------------------
 -- X (Eve, alone in her own couple) cannot touch A and B's pair; resetting only ever removes your own.
