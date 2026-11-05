@@ -363,6 +363,36 @@ end $$;
 reset role;
 delete from public.rounds where id in (:'w1', :'w2', :'w3');
 
+-- Saved cards -------------------------------------------------------------------
+select pg_temp.as_user(:A);
+insert into public.rounds (couple_id, lv, idx, drawn_by) values (public.my_couple(), 'know', 11, auth.uid()) returning id as v1 \gset
+insert into public.saved (round_id, user_id) values (:'v1', auth.uid());
+select pg_temp.check((select count(*) = 1 from public.saved), 'you can save one of your cards');
+reset role;
+select set_config('my.v1', :'v1', false);
+select pg_temp.as_user(:B);
+select pg_temp.check((select count(*) = 0 from public.saved), 'what you save is private from your partner');
+do $$ begin
+  insert into public.saved (round_id, user_id) values (current_setting('my.v1')::uuid, 'aaaaaaaa-0000-0000-0000-000000000001');
+  raise exception 'FAILED: saved for the partner';
+exception when insufficient_privilege then raise notice 'ok: you cannot save for your partner';
+end $$;
+delete from public.saved where round_id = :'v1';
+reset role;
+select pg_temp.check((select count(*) = 1 from public.saved), 'your partner cannot unsave your cards');
+select pg_temp.as_user(:X);
+do $$ begin
+  insert into public.saved (round_id, user_id) values (current_setting('my.v1')::uuid, auth.uid());
+  raise exception 'FAILED: a stranger saved our card';
+exception when insufficient_privilege then raise notice 'ok: strangers cannot save your cards';
+end $$;
+reset role;
+select pg_temp.as_user(:A);
+delete from public.saved where round_id = :'v1';
+select pg_temp.check((select count(*) = 0 from public.saved), 'you can unsave');
+reset role;
+delete from public.rounds where id = :'v1';
+
 -- Question pool -----------------------------------------------------------------
 select setseed(0.42);
 select pg_temp.as_user(:A);

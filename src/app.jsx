@@ -110,18 +110,20 @@ function useCouple(me) {
   const load = useCallback(async () => {
     const { data: member } = await supabase.from("members").select("couple_id, name").eq("user_id", me.id).maybeSingle();
     if (!member) return setState({ loading: false, member: null });
-    const [couple, members, rounds, answers, comments, writing] = await Promise.all([
+    const [couple, members, rounds, answers, comments, writing, saved] = await Promise.all([
       supabase.from("couples").select("*").eq("id", member.couple_id).single(),
       supabase.from("members").select("user_id, name").eq("couple_id", member.couple_id),
       supabase.from("rounds").select("*").eq("couple_id", member.couple_id).order("created_at", { ascending: false }),
       supabase.from("answers").select("*"),
       supabase.from("comments").select("*"),
-      supabase.from("writing").select("*")
+      supabase.from("writing").select("*"),
+      supabase.from("saved").select("round_id")
     ]);
     // Skipped cards stay out of sight, but are kept so the deck doesn't deal them again soon.
     setState({ loading: false, member, couple: couple.data, members: members.data || [],
       rounds: (rounds.data || []).filter(r => !r.skipped_at), skipped: (rounds.data || []).filter(r => r.skipped_at),
-      answers: answers.data || [], comments: comments.data || [], writing: writing.data || [] });
+      answers: answers.data || [], comments: comments.data || [], writing: writing.data || [],
+      saved: new Set((saved.data || []).map(s => s.round_id)) });
   }, [me.id]);
 
   useEffect(() => { load(); }, [load]);
@@ -133,6 +135,7 @@ function useCouple(me) {
       .on("postgres_changes", { event: "*", schema: "public", table: "answers" }, load)
       .on("postgres_changes", { event: "*", schema: "public", table: "comments" }, load)
       .on("postgres_changes", { event: "*", schema: "public", table: "writing" }, load)
+      .on("postgres_changes", { event: "*", schema: "public", table: "saved" }, load)
       .on("postgres_changes", { event: "*", schema: "public", table: "members", filter: `couple_id=eq.${coupleId}` }, load)
       .subscribe();
     const onShow = () => document.visibilityState === "visible" && load();
@@ -367,6 +370,24 @@ function Waiting({ code }) {
 const writerOf = round => round.written_by || round.drawn_by;
 const ownLabel = (round, me, partner) => writerOf(round) === me?.id ? "Written by you" : `Written by ${partner?.name || "your partner"}`;
 
+// Save a card to find it again under "Saved" in Ours. Only you see what you've saved.
+function SaveCard({ round, data, me, reload }) {
+  const [saved, setSaved] = useState(null), [error, setError] = useState(""); // null: go by what the database says
+  const on = saved ?? data.saved.has(round.id);
+  const toggle = async () => {
+    setSaved(!on); setError("");
+    const { error } = on
+      ? await supabase.from("saved").delete().eq("round_id", round.id).eq("user_id", me.id)
+      : await supabase.from("saved").insert({ round_id: round.id, user_id: me.id });
+    if (error) { setSaved(on); setError(on ? "Couldn't unsave it." : "Couldn't save it."); }
+    await reload(); setSaved(null);
+  };
+  return <span class="save">
+    <button class="link save-btn" aria-pressed={on} onClick={toggle}>{on ? "★ Saved" : "☆ Save"}</button>
+    {error && <span class="error" role="alert"> {error}</span>}
+  </span>;
+}
+
 function Card({ round, me, partner }) {
   const wild = round.lv === "wild", m = round.lv === "own" ? { label: ownLabel(round, me, partner) } : wild ? WILD : META[round.lv];
   return <article class={"card" + (wild ? " wild" : "")} aria-label="Card">
@@ -419,6 +440,7 @@ function Round({ round, data, me, partner, answers, comments, couple, today, onD
 
   return <>
     <Card round={round} me={me} partner={partner} />
+    <SaveCard round={round} data={data} me={me} reload={reload} />
     <p class="status"><span class={"dot" + (mine ? " on" : "")} />You {mine ? "answered" : "haven't answered yet"}
       <span class={"dot" + (partnerDone ? " on" : "")} style="margin-left:var(--s3)" /><span><span class="hand" style="font-size:20px">{partner.name}</span> {partnerDone ? "answered" : "hasn't yet"}</span></p>
 
@@ -507,7 +529,7 @@ function TheirComment({ round, partner, comments }) {
 
 // ---------------------------------------------------------------- everything you've answered together
 // Filters for Ours. The choice is remembered on this phone only.
-const OURS_FILTERS = [["all", "All"], ["own", "Our questions"], ["deck", "From the deck"]];
+const OURS_FILTERS = [["all", "All"], ["saved", "Saved"], ["own", "Our questions"], ["deck", "From the deck"]];
 const FILTER_KEY = "closer:ours-filter";
 const readFilter = () => { try { const f = localStorage.getItem(FILTER_KEY); return OURS_FILTERS.some(([k]) => k === f) ? f : "all"; } catch { return "all"; } };
 
@@ -516,19 +538,22 @@ function Ours({ me, data, partner, reload }) {
   const [filter, setFilterState] = useState(readFilter);
   const setFilter = f => { setFilterState(f); try { localStorage.setItem(FILTER_KEY, f); } catch {} };
   if (!rounds.length) return <p class="note">Your cards will collect here.</p>;
-  const shown = rounds.filter(r => filter === "all" || (filter === "own") === (r.lv === "own"));
-  const ownCount = rounds.filter(r => r.lv === "own").length;
+  const shown = rounds.filter(r => filter === "all" || (filter === "saved" ? data.saved.has(r.id) : (filter === "own") === (r.lv === "own")));
+  const counts = { own: rounds.filter(r => r.lv === "own").length, saved: rounds.filter(r => data.saved.has(r.id)).length };
   return <div class="history">
     <div class="chips" role="group" aria-label="Show">
       {OURS_FILTERS.map(([k, label]) => <button class="chip" aria-pressed={filter === k} onClick={() => setFilter(k)}>
-        {label}{k === "own" && ownCount > 0 && <span class="chip-count">{ownCount}</span>}</button>)}
+        {label}{counts[k] > 0 && <span class="chip-count">{counts[k]}</span>}</button>)}
     </div>
-    {!shown.length && <p class="note">{filter === "own" ? "No questions of your own yet. Write one from Today." : "Nothing here yet."}</p>}
+    {!shown.length && <p class="note">{filter === "own" ? "No questions of your own yet. Write one from Today." : filter === "saved" ? "Nothing saved yet. Tap ☆ Save on any card to keep it here." : "Nothing here yet."}</p>}
     {shown.map(r => {
     const mine = answers.find(a => a.round_id === r.id && a.user_id === me.id);
     const theirs = partner && answers.find(a => a.round_id === r.id && a.user_id === partner.user_id);
     return <section class="entry">
-      <span class="kicker">{r.lv === "own" ? <span class="tag">{ownLabel(r, me, partner)}</span> : r.lv === "wild" ? "Wild" : META[r.lv].name} · {r.day ? formatDay(r.day) : formatDay(r.created_at.slice(0, 10))}</span>
+      <div class="entry-head">
+        <span class="kicker">{r.lv === "own" ? <span class="tag">{ownLabel(r, me, partner)}</span> : r.lv === "wild" ? "Wild" : META[r.lv].name} · {r.day ? formatDay(r.day) : formatDay(r.created_at.slice(0, 10))}</span>
+        <SaveCard round={r} data={data} me={me} reload={reload} />
+      </div>
       <p class="entry-q">{cardText(r)}</p>
       {theirs && <Answer name={partner.name} body={theirs.body} />}
       {theirs && mine && <MyComment round={r} me={me} partner={partner} comments={comments} reload={reload} />}
