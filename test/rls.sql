@@ -424,7 +424,11 @@ select pg_temp.as_user(:B);
 select set_config('my.couple', public.my_couple()::text, false);
 -- One deal per statement (and so per transaction), as in the app.
 select set_config('my.t0', clock_timestamp()::text, false);
-select format('select public.deal_card(%L, %L, %s::smallint)', current_setting('my.couple'), 'know', i % 40) from generate_series(1, 60) i \gexec
+-- B answers each card before the next one is dealt, as a couple would (an unanswered pool card would go back).
+select q from generate_series(1, 60) i, lateral (values
+  (format('select public.deal_card(%L, %L, %s::smallint)', current_setting('my.couple'), 'know', i % 40)),
+  (format('insert into public.answers (round_id, user_id, body) select id, %L, %L from public.rounds where couple_id = %L and skipped_at is null order by created_at desc limit 1', 'bbbbbbbb-0000-0000-0000-000000000002', 'ok', current_setting('my.couple')))
+) v(q) \gexec
 reset role;
 create temp table dealt as
   select r.* from public.rounds r where r.couple_id = current_setting('my.couple')::uuid and r.created_at >= current_setting('my.t0')::timestamptz;
@@ -464,6 +468,58 @@ select set_config('request.jwt.claim.sub', '', false), set_config('request.jwt.c
 select pg_temp.check((public.deal_card(current_setting('my.couple')::uuid, 'deep', 3::smallint, '2027-01-01')).day = '2027-01-01', 'the daily job can deal');
 reset role;
 select set_config('request.jwt.claim.role', '', false);
+
+-- Covered-up pool questions go back to the pool ------------------------------------
+-- A pool question by B comes up (set up as deal_card does it), then A deals a new card on top of it.
+select set_config('my.couple', (select couple_id::text from public.members where user_id = :A), false);
+create function pg_temp.pool_card(q text) returns uuid language plpgsql as $$
+declare pid uuid; rid uuid;
+begin
+  insert into public.pool_questions (couple_id, author_id, question) values (current_setting('my.couple')::uuid, 'bbbbbbbb-0000-0000-0000-000000000002', q) returning id into pid;
+  insert into public.rounds (couple_id, lv, idx, question, written_by, drawn_by, created_at)
+    values (current_setting('my.couple')::uuid, 'own', 0, q, 'bbbbbbbb-0000-0000-0000-000000000002', 'aaaaaaaa-0000-0000-0000-000000000001', clock_timestamp()) returning id into rid;
+  update public.pool_questions set dealt_at = now(), dealt_round = rid where id = pid;
+  return rid;
+end $$;
+delete from public.pool_questions where dealt_at is null; -- an empty pool, so the next deal is a deck card
+select pg_temp.pool_card('Come back later') as ret1 \gset
+select pg_temp.as_user(:A);
+select public.deal_card(current_setting('my.couple')::uuid, 'know', 5::smallint) is not null as dealt \gset
+reset role;
+select pg_temp.check((select returned_at is not null from public.rounds where id = :'ret1'), 'an unanswered pool question is set aside when a new card covers it');
+select pg_temp.check((select dealt_at is null and dealt_round is null from public.pool_questions where question = 'Come back later'), 'and its question is back in the pool');
+select set_config('my.ret1', :'ret1', false);
+select pg_temp.as_user(:A);
+do $$ begin
+  insert into public.answers (round_id, user_id, body) values (current_setting('my.ret1')::uuid, auth.uid(), 'too late');
+  raise exception 'FAILED: answered a returned card';
+exception when insufficient_privilege then raise notice 'ok: no answers on a card whose question went back';
+end $$;
+reset role;
+
+-- Once someone has answered, or started writing, the card stays where it is.
+delete from public.pool_questions where dealt_at is null;
+select pg_temp.pool_card('Answered already') as ret2 \gset
+select pg_temp.as_user(:A);
+insert into public.answers (round_id, user_id, body) values (:'ret2', auth.uid(), 'Mine');
+select public.deal_card(current_setting('my.couple')::uuid, 'know', 6::smallint) is not null as dealt \gset
+reset role;
+select pg_temp.check((select returned_at is null from public.rounds where id = :'ret2'), 'a pool question someone answered stays open');
+delete from public.pool_questions where dealt_at is null;
+select pg_temp.pool_card('Being written') as ret3 \gset
+select pg_temp.as_user(:B);
+select public.mark_writing(:'ret3', true);
+reset role;
+select pg_temp.as_user(:A);
+select public.deal_card(current_setting('my.couple')::uuid, 'know', 7::smallint) is not null as dealt \gset
+reset role;
+select pg_temp.check((select returned_at is null from public.rounds where id = :'ret3'), 'a pool question someone is writing an answer to stays open');
+-- A deck card that gets covered stays open too.
+select pg_temp.as_user(:A);
+select (public.deal_card(current_setting('my.couple')::uuid, 'deep', 8::smallint)).id as deck1 \gset
+select public.deal_card(current_setting('my.couple')::uuid, 'deep', 9::smallint) is not null as dealt \gset
+reset role;
+select pg_temp.check((select returned_at is null from public.rounds where id = :'deck1'), 'a covered deck card stays open');
 
 -- Reset pairing ---------------------------------------------------------------
 -- X (Eve, alone in her own couple) cannot touch A and B's pair; resetting only ever removes your own.
