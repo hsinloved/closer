@@ -119,9 +119,10 @@ function useCouple(me) {
       supabase.from("writing").select("*"),
       supabase.from("saved").select("round_id")
     ]);
-    // Skipped cards stay out of sight, but are kept so the deck doesn't deal them again soon.
+    // Skipped cards stay out of sight, but are kept so the deck doesn't deal them again soon. A card whose question
+    // went back to the pool (returned_at) is hidden: the question will come up again as a new card.
     setState({ loading: false, member, couple: couple.data, members: members.data || [],
-      rounds: (rounds.data || []).filter(r => !r.skipped_at), skipped: (rounds.data || []).filter(r => r.skipped_at),
+      rounds: (rounds.data || []).filter(r => !r.skipped_at && !r.returned_at), skipped: (rounds.data || []).filter(r => r.skipped_at),
       answers: answers.data || [], comments: comments.data || [], writing: writing.data || [],
       saved: new Set((saved.data || []).map(s => s.round_id)) });
   }, [me.id]);
@@ -149,6 +150,7 @@ function Home({ me }) {
   const [data, reload] = useCouple(me);
   useEffect(() => { keepPushFresh(me.id); pruneDrafts(); }, [me.id]);
   const [tab, setTab] = useState("today");
+  const [focus, setFocus] = useState(null); // an earlier card opened from "Still open" or Ours
   const [, setSeen] = useState(0); // re-render the tab badge after a reveal
   if (data.loading) return <Frame />;
   if (!data.member) return <Pair onDone={reload} />;
@@ -156,13 +158,13 @@ function Home({ me }) {
   const latest = data.rounds[0], unread = Boolean(latest && latest.answered_by.length >= 2 && !seenReveal(latest.id));
   return <>
     <Frame right={partner && <span class="muted">with <span class="hand" style="font-size:22px;color:var(--accent-ink)">{partner.name}</span></span>}>
-      {tab === "today" && <Today me={me} data={data} partner={partner} reload={reload} onSeen={() => setSeen(n => n + 1)} />}
-      {tab === "ours" && <Ours me={me} data={data} partner={partner} reload={reload} />}
+      {tab === "today" && <Today me={me} data={data} partner={partner} reload={reload} onSeen={() => setSeen(n => n + 1)} focus={focus} setFocus={setFocus} />}
+      {tab === "ours" && <Ours me={me} data={data} partner={partner} reload={reload} onAnswer={id => { setFocus(id); setTab("today"); window.scrollTo(0, 0); }} />}
       {tab === "settings" && <Settings me={me} data={data} partner={partner} reload={reload} />}
     </Frame>
     <nav class="tabs" aria-label="Sections">
       {[["today", "Today"], ["ours", "Ours"], ["settings", "Settings"]].map(([k, label]) =>
-        <button class="tab" aria-current={tab === k ? "page" : undefined} onClick={() => setTab(k)}>{label}{k === "today" && unread && <span class="badge" aria-label="new" />}</button>)}
+        <button class="tab" aria-current={tab === k ? "page" : undefined} onClick={() => { setTab(k); if (k === "today") setFocus(null); }}>{label}{k === "today" && unread && <span class="badge" aria-label="new" />}</button>)}
     </nav>
   </>;
 }
@@ -306,7 +308,24 @@ function WhatsNew() {
   </section>;
 }
 
-function Today({ me, data, partner, reload, onSeen }) {
+// Earlier cards you still haven't answered, from the last week (older ones are in Ours), newest first.
+const OPEN_DAYS = 7;
+const stillOpen = (data, me, current) => data.rounds.filter(r => r !== current && !r.answered_by.includes(me.id)
+  && Date.now() - new Date(r.created_at) < OPEN_DAYS * 864e5);
+
+function StillOpen({ rounds, me, partner, onOpen }) {
+  if (!rounds.length) return null;
+  return <section class="still-open">
+    <h2>Still open</h2>
+    <ul>{rounds.map(r => <li><button class="open-card" onClick={() => onOpen(r.id)}>
+      <span class="kicker">{r.lv === "own" ? ownLabel(r, me, partner) : r.lv === "wild" ? "Wild" : META[r.lv].name} · {formatDay(r.day || r.created_at.slice(0, 10))}
+        {r.answered_by.includes(partner.user_id) ? ` · ${partner.name} answered` : ""}</span>
+      <span class="open-q">{cardText(r)}</span>
+    </button></li>)}</ul>
+  </section>;
+}
+
+function Today({ me, data, partner, reload, onSeen, focus, setFocus }) {
   const { couple, rounds, answers } = data;
   const today = localDay(couple.time_zone);
   const current = rounds[0];
@@ -326,11 +345,19 @@ function Today({ me, data, partner, reload, onSeen }) {
     <button class="btn btn-primary btn-block" onClick={() => draw(data, me).then(reload)}>Draw our first card</button>
     <QuestionPool data={data} me={me} partner={partner} />
   </div>;
+  // An earlier card, opened from "Still open" or Ours.
+  const earlier = focus && focus !== current.id && rounds.find(r => r.id === focus);
+  if (earlier) return <>
+    <button class="link back" onClick={() => setFocus(null)}>‹ Back to the current card</button>
+    <Round key={earlier.id} round={earlier} older data={data} me={me} partner={partner} answers={answers} comments={data.comments} couple={couple} today={today}
+      reload={reload} onSeen={onSeen} />
+  </>;
   return <>
     <WhatsNew />
     <SkippedDraft data={data} me={me} partner={partner} current={current} reload={reload} />
     <Round key={current.id} round={current} data={data} me={me} partner={partner} answers={answers} comments={data.comments} couple={couple} today={today}
     onDraw={() => draw(data, me).then(reload)} reload={reload} onSeen={onSeen} />
+    <StillOpen rounds={stillOpen(data, me, current)} me={me} partner={partner} onOpen={id => { setFocus(id); window.scrollTo(0, 0); }} />
     <QuestionPool data={data} me={me} partner={partner} />
   </>;
 }
@@ -417,7 +444,8 @@ function Card({ round, me, partner }) {
   </article>;
 }
 
-function Round({ round, data, me, partner, answers, comments, couple, today, onDraw, reload, onSeen }) {
+// `older`: an earlier card opened again. It can be answered, but not skipped, and it doesn't offer the next card.
+function Round({ round, older, data, me, partner, answers, comments, couple, today, onDraw, reload, onSeen }) {
   const mine = answers.find(a => a.round_id === round.id && a.user_id === me.id);
   const theirs = answers.find(a => a.round_id === round.id && a.user_id === partner.user_id);
   const partnerDone = round.answered_by.includes(partner.user_id);
@@ -462,7 +490,7 @@ function Round({ round, data, me, partner, answers, comments, couple, today, onD
     <p class="status"><span class={"dot" + (mine ? " on" : "")} />You {mine ? "answered" : "haven't answered yet"}
       <span class={"dot" + (partnerDone ? " on" : "")} style="margin-left:var(--s3)" /><span><span class="hand" style="font-size:20px">{partner.name}</span> {partnerDone ? "answered" : "hasn't yet"}</span></p>
 
-    {!mine && !partnerDone && <SkipCard round={round} data={data} me={me} partner={partner} reload={reload}
+    {!older && !mine && !partnerDone && <SkipCard round={round} data={data} me={me} partner={partner} reload={reload}
       myDraft={Boolean(text.trim())} onSkipped={() => writeDraft(draftKey, "")} />}
 
     {editing && !revealed && <form onSubmit={save} class="page">
@@ -487,8 +515,8 @@ function Round({ round, data, me, partner, answers, comments, couple, today, onD
       <TheirComment round={round} partner={partner} comments={comments} />
     </div>}
 
-    {(revealed || !couple.daily_enabled) && <button class="btn btn-block" onClick={onDraw}>{nextLabel}</button>}
-    {revealed && nextDaily && <p class="note">Tomorrow's card arrives at {String(couple.daily_hour).padStart(2, "0")}:00.</p>}
+    {!older && (revealed || !couple.daily_enabled) && <button class="btn btn-block" onClick={onDraw}>{nextLabel}</button>}
+    {!older && revealed && nextDaily && <p class="note">Tomorrow's card arrives at {String(couple.daily_hour).padStart(2, "0")}:00.</p>}
   </>;
 }
 
@@ -551,7 +579,7 @@ const OURS_FILTERS = [["all", "All"], ["saved", "Saved"], ["own", "Our questions
 const FILTER_KEY = "closer:ours-filter";
 const readFilter = () => { try { const f = localStorage.getItem(FILTER_KEY); return OURS_FILTERS.some(([k]) => k === f) ? f : "all"; } catch { return "all"; } };
 
-function Ours({ me, data, partner, reload }) {
+function Ours({ me, data, partner, reload, onAnswer }) {
   const { rounds, answers, comments } = data;
   const [filter, setFilterState] = useState(readFilter);
   const setFilter = f => { setFilterState(f); try { localStorage.setItem(FILTER_KEY, f); } catch {} };
@@ -575,7 +603,7 @@ function Ours({ me, data, partner, reload }) {
       <p class="entry-q">{cardText(r)}</p>
       {theirs && <Answer name={partner.name} body={theirs.body} />}
       {theirs && mine && <MyComment round={r} me={me} partner={partner} comments={comments} reload={reload} />}
-      {mine ? <Answer name="You" body={mine.body} /> : <p class="note">You haven't answered this one.</p>}
+      {mine ? <Answer name="You" body={mine.body} /> : <button class="btn btn-ghost answer-it" onClick={() => onAnswer(r.id)}>Answer it</button>}
       {theirs && mine && <TheirComment round={r} partner={partner} comments={comments} />}
       {mine && !theirs && partner && <p class="note">{r.answered_by.includes(partner.user_id) ? "Sealed" : `Waiting for ${partner.name}`}.</p>}
     </section>;

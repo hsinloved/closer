@@ -131,3 +131,12 @@ a { color: var(--accent-ink); }
 /* What's new: a one-off note after an update */
 .news ul { margin: 0; padding-left: 1.1em; display: flex; flex-direction: column; gap: var(--s2); }
 .news li { line-height: 1.4; }
+
+/* Still open: earlier cards you haven't answered */
+.still-open { border-top: 1px solid var(--rule); padding-top: var(--s4); display: flex; flex-direction: column; gap: var(--s2); }
+.still-open h2 { margin: 0; font: 400 15px var(--serif); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.still-open ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s2); }
+.open-card { width: 100%; text-align: left; background: var(--surface); border: 0; border-radius: var(--r-md); padding: var(--s3) var(--s4); display: flex; flex-direction: column; gap: var(--s1); cursor: pointer; color: var(--text); }
+.open-q { font-size: 17px; line-height: 1.3; }
+.back { align-self: flex-start; }
+.answer-it { align-self: flex-start; padding-left: 0; }
