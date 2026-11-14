@@ -151,6 +151,23 @@ function study(lv, idx) {
     });
   }
 
+  if (lv === "ahead") {
+    // Looking ahead: level hairlines like a horizon, rings beside them, and a dashed line leading on from where they meet.
+    const [a, b] = place(R, rA * 0.95, rB * 0.95, between(R, 0.56, 0.72));
+    const A = circle(a, rA * 0.95), B = circle(b, rB * 0.95);
+    const mid = [(a[0] * rB + b[0] * rA) / (rA + rB), (a[1] * rB + b[1] * rA) / (rA + rB)];
+    const right = mid[0] < W / 2, endX = right ? W - M - 6 : M + 6, endY = Math.max(M + 8, mid[1] - between(R, 14, 34));
+    return plate({
+      A, B, wheat: WHEAT,
+      defs: hatch("pa", BRICK, 3.4, 90, 1),
+      fillA: fieldA, fillB: rings(b, rB * 0.95, TEAL, between(R, 4.4, 5.2), 0.85),
+      outA: outline(A, BRICK, 0.9), outB: "",
+      over: `<path d="M${n2(mid[0])} ${n2(mid[1])}L${n2(endX)} ${n2(endY)}" stroke="${INK}" stroke-width=".7" stroke-opacity=".6" stroke-dasharray="1.5 4" stroke-linecap="round"/>` +
+        `<circle cx="${n2(endX)}" cy="${n2(endY)}" r="1.6" fill="${INK}" fill-opacity=".6"/>`,
+      markColor: INK, markOpacity: 0.32, centre: right ? [W, 0] : [0, 0]
+    });
+  }
+
   // know: first acquaintance. Two circles, hairlines and points, a modest overlap.
   const [a, b] = place(R, rA * 0.95, rB * 0.95, between(R, 0.58, 0.74));
   const A = circle(a, rA * 0.95), B = circle(b, rB * 0.95);

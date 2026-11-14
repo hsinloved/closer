@@ -1,6 +1,6 @@
 import { Q } from "./deck.js";
 
-const LEVELS = ["know", "play", "world", "deep"];
+const LEVELS = ["know", "play", "world", "deep", "ahead"];
 
 // Cards that need you in the same room (eye contact, singing, swapping phones, "show me"). They stay in the
 // in-person game (together.html, which has its own copy of the deck) but are never dealt in the app.

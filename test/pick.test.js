@@ -18,7 +18,7 @@ test("starts over once a level is used up", () => {
 test("deals wild cards now and then, and every card has text", () => {
   const seen = new Set();
   for (let n = 0; n < 2000; n++) { const c = pickCard([]); seen.add(c.lv); assert.ok(cardText(c).length > 10); }
-  assert.deepEqual([...seen].sort(), ["deep", "know", "play", "wild", "world"]);
+  assert.deepEqual([...seen].sort(), ["ahead", "deep", "know", "play", "wild", "world"]);
 });
 
 test("today turns over at local midnight, not UTC", () => {
