@@ -140,3 +140,7 @@ a { color: var(--accent-ink); }
 .open-q { font-size: 17px; line-height: 1.3; }
 .back { align-self: flex-start; }
 .answer-it { align-self: flex-start; padding-left: 0; }
+
+/* A note added under your own answer after the reveal: like a comment, but in the muted rule colour */
+.note-added { border-left-color: var(--muted); }
+.note-added .who { color: var(--muted); }

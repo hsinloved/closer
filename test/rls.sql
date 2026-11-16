@@ -534,6 +534,39 @@ exception when others then
 end $$;
 reset role;
 
+-- Notes under your own answer -------------------------------------------------
+-- r1 is revealed (both answered). X is a stranger. An open card with only A's answer: no notes yet.
+select pg_temp.as_user(:A);
+insert into public.notes (round_id, author_id, body) values (:'r1', auth.uid(), 'P.S. and tea');
+select pg_temp.check((select count(*) = 1 from public.notes), 'you can add a note to your answer after the reveal');
+do $$ begin
+  insert into public.notes (round_id, author_id, body) values (current_setting('my.r1')::uuid, auth.uid(), 'again');
+  raise exception 'FAILED: two notes on one answer';
+exception when unique_violation then raise notice 'ok: one note per answer';
+end $$;
+do $$ begin
+  insert into public.notes (round_id, author_id, body) values (current_setting('my.r1')::uuid, 'bbbbbbbb-0000-0000-0000-000000000002', 'as you');
+  raise exception 'FAILED: added a note as the partner';
+exception when insufficient_privilege then raise notice 'ok: you cannot add a note as your partner';
+end $$;
+do $$ begin
+  insert into public.notes (round_id, author_id, body)
+    select r.id, auth.uid(), 'early' from public.rounds r where r.couple_id = public.my_couple() and cardinality(r.answered_by) < 2 and r.skipped_at is null limit 1;
+  if found then raise exception 'FAILED: note before the reveal'; end if;
+  raise exception 'FAILED: no unrevealed card to test with';
+exception when insufficient_privilege then raise notice 'ok: no notes before the reveal';
+end $$;
+reset role;
+select pg_temp.as_user(:B);
+select pg_temp.check((select body = 'P.S. and tea' from public.notes), 'your partner sees your note');
+update public.notes set body = 'changed' where author_id <> auth.uid();
+delete from public.notes where author_id <> auth.uid();
+reset role;
+select pg_temp.check((select body = 'P.S. and tea' from public.notes), 'you cannot edit or delete your partner''s note');
+select pg_temp.as_user(:X);
+select pg_temp.check((select count(*) = 0 from public.notes), 'strangers see no notes');
+reset role;
+
 -- Reset pairing ---------------------------------------------------------------
 -- X (Eve, alone in her own couple) cannot touch A and B's pair; resetting only ever removes your own.
 select pg_temp.as_user(:X);
