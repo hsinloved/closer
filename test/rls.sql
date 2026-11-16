@@ -521,6 +521,19 @@ select public.deal_card(current_setting('my.couple')::uuid, 'deep', 9::smallint)
 reset role;
 select pg_temp.check((select returned_at is null from public.rounds where id = :'deck1'), 'a covered deck card stays open');
 
+-- The Ahead level ----------------------------------------------------------------
+delete from public.pool_questions where dealt_at is null;
+select pg_temp.as_user(:A);
+select pg_temp.check((public.deal_card(current_setting('my.couple')::uuid, 'ahead', 3::smallint)).lv = 'ahead', 'Ahead cards can be dealt');
+do $$ begin
+  perform public.deal_card(current_setting('my.couple')::uuid, 'nonsense', 0::smallint);
+  raise exception 'FAILED: dealt a made-up level';
+exception when others then
+  if sqlerrm like 'FAILED%' then raise; end if;
+  raise notice 'ok: unknown levels are still refused';
+end $$;
+reset role;
+
 -- Reset pairing ---------------------------------------------------------------
 -- X (Eve, alone in her own couple) cannot touch A and B's pair; resetting only ever removes your own.
 select pg_temp.as_user(:X);
