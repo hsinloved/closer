@@ -110,20 +110,21 @@ function useCouple(me) {
   const load = useCallback(async () => {
     const { data: member } = await supabase.from("members").select("couple_id, name").eq("user_id", me.id).maybeSingle();
     if (!member) return setState({ loading: false, member: null });
-    const [couple, members, rounds, answers, comments, writing, saved] = await Promise.all([
+    const [couple, members, rounds, answers, comments, writing, saved, notes] = await Promise.all([
       supabase.from("couples").select("*").eq("id", member.couple_id).single(),
       supabase.from("members").select("user_id, name").eq("couple_id", member.couple_id),
       supabase.from("rounds").select("*").eq("couple_id", member.couple_id).order("created_at", { ascending: false }),
       supabase.from("answers").select("*"),
       supabase.from("comments").select("*"),
       supabase.from("writing").select("*"),
-      supabase.from("saved").select("round_id")
+      supabase.from("saved").select("round_id"),
+      supabase.from("notes").select("*")
     ]);
     // Skipped cards stay out of sight, but are kept so the deck doesn't deal them again soon. A card whose question
     // went back to the pool (returned_at) is hidden: the question will come up again as a new card.
     setState({ loading: false, member, couple: couple.data, members: members.data || [],
       rounds: (rounds.data || []).filter(r => !r.skipped_at && !r.returned_at), skipped: (rounds.data || []).filter(r => r.skipped_at),
-      answers: answers.data || [], comments: comments.data || [], writing: writing.data || [],
+      answers: answers.data || [], comments: comments.data || [], notes: notes.data || [], writing: writing.data || [],
       saved: new Set((saved.data || []).map(s => s.round_id)) });
   }, [me.id]);
 
@@ -135,6 +136,7 @@ function useCouple(me) {
       .on("postgres_changes", { event: "*", schema: "public", table: "rounds", filter: `couple_id=eq.${coupleId}` }, load)
       .on("postgres_changes", { event: "*", schema: "public", table: "answers" }, load)
       .on("postgres_changes", { event: "*", schema: "public", table: "comments" }, load)
+      .on("postgres_changes", { event: "*", schema: "public", table: "notes" }, load)
       .on("postgres_changes", { event: "*", schema: "public", table: "writing" }, load)
       .on("postgres_changes", { event: "*", schema: "public", table: "saved" }, load)
       .on("postgres_changes", { event: "*", schema: "public", table: "members", filter: `couple_id=eq.${coupleId}` }, load)
@@ -510,8 +512,10 @@ function Round({ round, older, data, me, partner, answers, comments, couple, tod
     {revealed && !shown && <button class="btn btn-primary btn-block" onClick={reveal}>You've both answered. Reveal</button>}
     {revealed && shown && <div class="page">
       <Answer name={partner.name} body={theirs?.body} reveal />
+      <TheirNote round={round} partner={partner} notes={data.notes} />
       <MyComment round={round} me={me} partner={partner} comments={comments} reload={reload} />
       <Answer name="You" body={mine.body} reveal />
+      <MyNote round={round} me={me} notes={data.notes} reload={reload} />
       <TheirComment round={round} partner={partner} comments={comments} />
     </div>}
 
@@ -573,6 +577,54 @@ function TheirComment({ round, partner, comments }) {
   return <div class="comment"><span class="who">{partner.name}, to you</span><p>{theirs.body}</p></div>;
 }
 
+// ---------------------------------------------------------------- notes
+// After the reveal your answer is locked, but you can add one note under it (a P.S.). The answer stays as written.
+function MyNote({ round, me, notes, reload }) {
+  const mine = notes.find(n => n.round_id === round.id && n.author_id === me.id);
+  const draftKey = `note:${round.id}`;
+  const [text, setText, , hadDraft] = useDraft(draftKey, mine?.body || "");
+  const [editing, setEditing] = useState(hadDraft);
+  const [busy, setBusy] = useState(false), [error, setError] = useState("");
+  const save = async e => {
+    e.preventDefault(); setBusy(true); setError("");
+    const body = text.trim();
+    const { error } = mine
+      ? await supabase.from("notes").update({ body }).eq("round_id", round.id).eq("author_id", me.id)
+      : await supabase.from("notes").insert({ round_id: round.id, author_id: me.id, body });
+    setBusy(false);
+    if (error) return setError(error.message);
+    writeDraft(draftKey, "");
+    if (!mine) notify("noted", round.id);
+    setEditing(false); reload();
+  };
+  const remove = async () => {
+    if (!window.confirm("Delete your note?")) return;
+    const { error } = await supabase.from("notes").delete().eq("round_id", round.id).eq("author_id", me.id);
+    if (error) setError(error.message); else { setText(""); setEditing(false); reload(); }
+  };
+  if (editing) return <form onSubmit={save} class="comment-form">
+    <label class="sr-only" for={`n-${round.id}`}>A note to add under your answer</label>
+    <textarea id={`n-${round.id}`} class="textarea comment-input" maxLength={1000} placeholder="Something to add to your answer…" value={text} onInput={e => setText(e.target.value)} />
+    <div class="row">
+      <button class="btn btn-primary" disabled={busy || !text.trim()}>{busy ? "Saving…" : "Save note"}</button>
+      <button type="button" class="btn btn-ghost" onClick={() => { setText(mine?.body || ""); setEditing(false); setError(""); }}>Cancel</button>
+    </div>
+    {error && <p class="error" role="alert">{error}</p>}
+  </form>;
+  if (mine) return <div class="comment note-added">
+    <span class="who">You added</span><p>{mine.body}</p>
+    <div class="comment-actions"><button class="link" onClick={() => setEditing(true)}>Edit</button><button class="link" onClick={remove}>Delete</button></div>
+    {error && <p class="error" role="alert">{error}</p>}
+  </div>;
+  return <button class="link comment-add" onClick={() => setEditing(true)}>Add a note to my answer</button>;
+}
+
+function TheirNote({ round, partner, notes }) {
+  const theirs = notes.find(n => n.round_id === round.id && n.author_id === partner.user_id);
+  if (!theirs) return null;
+  return <div class="comment note-added"><span class="who">{partner.name} added</span><p>{theirs.body}</p></div>;
+}
+
 // ---------------------------------------------------------------- everything you've answered together
 // Filters for Ours. The choice is remembered on this phone only.
 const OURS_FILTERS = [["all", "All"], ["saved", "Saved"], ["own", "Our questions"], ["deck", "From the deck"]];
@@ -602,8 +654,10 @@ function Ours({ me, data, partner, reload, onAnswer }) {
       </div>
       <p class="entry-q">{cardText(r)}</p>
       {theirs && <Answer name={partner.name} body={theirs.body} />}
+      {theirs && mine && <TheirNote round={r} partner={partner} notes={data.notes} />}
       {theirs && mine && <MyComment round={r} me={me} partner={partner} comments={comments} reload={reload} />}
       {mine ? <Answer name="You" body={mine.body} /> : <button class="btn btn-ghost answer-it" onClick={() => onAnswer(r.id)}>Answer it</button>}
+      {theirs && mine && <MyNote round={r} me={me} notes={data.notes} reload={reload} />}
       {theirs && mine && <TheirComment round={r} partner={partner} comments={comments} />}
       {mine && !theirs && partner && <p class="note">{r.answered_by.includes(partner.user_id) ? "Sealed" : `Waiting for ${partner.name}`}.</p>}
     </section>;

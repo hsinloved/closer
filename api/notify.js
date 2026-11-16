@@ -7,7 +7,7 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return json(res, 405, { error: "POST only" });
   const token = (req.headers.authorization || "").replace(/^Bearer /, "");
   const { round_id: roundId, event } = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body || {});
-  if (!token || !["answered", "commented", "drawn", "skipped", "restored", "joined", "test"].includes(event) || (["answered", "commented", "drawn", "skipped", "restored"].includes(event) && !roundId)) return json(res, 400, { error: "token, event and round_id are required" });
+  if (!token || !["answered", "commented", "noted", "drawn", "skipped", "restored", "joined", "test"].includes(event) || (["answered", "commented", "noted", "drawn", "skipped", "restored"].includes(event) && !roundId)) return json(res, 400, { error: "token, event and round_id are required" });
 
   const db = admin();
   const { data: auth, error: authError } = await db.auth.getUser(token);
@@ -53,6 +53,12 @@ export default async function handler(req, res) {
     // You brought back a card your partner skipped, in the last few minutes.
     if (round.restored_by !== me || Date.now() - new Date(round.restored_at) > 10 * 60 * 1000) return json(res, 409, { error: "You did not just bring this card back" });
     message = { title: `${mine.name} brought the card back`, body: "They'd started answering it. Open Closer to see it.", tag: `round-${round.id}` };
+  } else if (event === "noted") {
+    const { data: note } = await db.from("notes").select("created_at").eq("round_id", round.id).eq("author_id", me).maybeSingle();
+    if (!note) return json(res, 409, { error: "You have not added a note to this card" });
+    // Only for a fresh note, so the same one can't be used to ping your partner again and again.
+    if (Date.now() - new Date(note.created_at) > 10 * 60 * 1000) return json(res, 409, { error: "Not a new note" });
+    message = { title: `${mine.name} added a note to their answer`, body: "Open Closer to read it.", tag: `note-${round.id}` };
   } else if (event === "commented") {
     const { data: comment } = await db.from("comments").select("created_at").eq("round_id", round.id).eq("author_id", me).maybeSingle();
     if (!comment) return json(res, 409, { error: "You have not commented on this card" });
