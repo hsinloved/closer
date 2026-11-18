@@ -47,3 +47,30 @@ test("never deals a card that needs you in the same room", async () => {
     assert.ok(!IN_PERSON.wild.includes(c.idx));
   }
 });
+
+test("levels stay balanced: no repeats in a row, at most twice in five, even shares over time", () => {
+  const LEVELS = ["know", "play", "world", "deep", "ahead"];
+  const recent = [], counts = {};
+  for (let n = 0; n < 5000; n++) {
+    const c = pickCard([], Math.random, { recent });
+    recent.unshift(c.lv);
+    counts[c.lv] = (counts[c.lv] || 0) + 1;
+  }
+  const deck = recent.filter(l => LEVELS.includes(l));
+  for (let i = 0; i + 1 < deck.length; i++) assert.notEqual(deck[i], deck[i + 1], "same level twice in a row");
+  for (let i = 0; i + 5 <= deck.length; i++) {
+    const w = deck.slice(i, i + 5);
+    for (const l of LEVELS) assert.ok(w.filter(x => x === l).length <= 2, `${l} three times in five cards`);
+  }
+  for (let i = 0; i + 1 < recent.length; i++) assert.ok(!(recent[i] === "wild" && recent[i + 1] === "wild"), "two wild cards in a row");
+  const total = deck.length;
+  for (const l of LEVELS) { const share = counts[l] / total; assert.ok(share > 0.17 && share < 0.23, `${l} share ${share.toFixed(3)}`); }
+  assert.ok(counts.wild / 5000 > 0.06 && counts.wild / 5000 < 0.12, "wild cards still turn up now and then");
+});
+
+test("the balance is not a fixed rotation", () => {
+  const recent = [], seqs = new Set();
+  for (let n = 0; n < 400; n++) { recent.unshift(pickCard([], Math.random, { recent, wildChance: 0 }).lv); }
+  for (let i = 0; i + 5 <= 400; i += 5) seqs.add(recent.slice(i, i + 5).join(","));
+  assert.ok(seqs.size > 20, "orders vary");
+});

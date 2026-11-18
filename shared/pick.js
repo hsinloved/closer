@@ -14,12 +14,27 @@ export const IN_PERSON = {
 };
 const inPerson = (lv, i) => (IN_PERSON[lv] || []).includes(i);
 
+// Choose the next level so the deck feels balanced rather than streaky. `recent` lists the levels of the cards
+// you've had, newest first. A level never comes twice in a row, at most twice in any five cards, and the longer
+// a level has been away the likelier it is, so every level comes round regularly but not in a fixed order.
+function chooseLevel(recent, rand) {
+  const deck = recent.filter(l => LEVELS.includes(l));
+  const gap = l => { const i = deck.indexOf(l); return i === -1 ? LEVELS.length * 2 : i; };
+  let ok = LEVELS.filter(l => gap(l) !== 0 && deck.slice(0, 4).filter(x => x === l).length < 2);
+  if (!ok.length) ok = LEVELS;
+  const weights = ok.map(l => 1 + gap(l)), total = weights.reduce((a, b) => a + b, 0);
+  let r = rand() * total;
+  for (let i = 0; i < ok.length; i++) { r -= weights[i]; if (r < 0) return ok[i]; }
+  return ok[ok.length - 1];
+}
+
 // Draw a card the two of you have not had yet, leaving out the ones only for the in-person game. `used` holds "lv:idx" keys from earlier rounds.
-// Wild cards turn up now and then; once a level is used up its cards can come round again.
+// Wild cards turn up now and then (never twice running); once a level is used up its cards can come round again.
+// opts.recent: the levels of your cards so far, newest first, to keep the levels balanced (see chooseLevel).
 export function pickCard(used, rand = Math.random, opts = {}) {
-  const seen = new Set(used);
+  const seen = new Set(used), recent = opts.recent || [];
   const level = opts.level && opts.level !== "mix" ? opts.level : null;
-  let lv = level || (rand() < (opts.wildChance ?? 0.1) ? "wild" : LEVELS[Math.floor(rand() * LEVELS.length)]);
+  let lv = level || (recent[0] !== "wild" && rand() < (opts.wildChance ?? 0.1) ? "wild" : chooseLevel(recent, rand));
   const remote = Q[lv].map((_, i) => i).filter(i => !inPerson(lv, i));
   const fresh = remote.filter(i => !seen.has(lv + ":" + i));
   const from = fresh.length ? fresh : remote;

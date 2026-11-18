@@ -16,9 +16,11 @@ export default async function handler(req, res) {
   for (const c of couples) {
     const { day, hour } = localDay(c.time_zone);
     if (hour < c.daily_hour) continue;
-    const { data: past } = await db.from("rounds").select("lv, idx, day").eq("couple_id", c.id);
+    const { data: past } = await db.from("rounds").select("lv, idx, day, created_at, skipped_at, returned_at").eq("couple_id", c.id).order("created_at", { ascending: false });
     if (past.some(r => r.day === day)) continue;
-    const card = pickCard(past.map(r => r.lv + ":" + r.idx));
+    // Balance the levels against the cards you actually had (newest first), as the app does.
+    const recent = past.filter(r => !r.skipped_at && !r.returned_at).map(r => r.lv);
+    const card = pickCard(past.map(r => r.lv + ":" + r.idx), Math.random, { recent });
     // deal_card may swap the deck card for a question from your pool.
     const { error: insertError } = await db.rpc("deal_card", { p_couple: c.id, p_lv: card.lv, p_idx: card.idx, p_day: day });
     if (insertError) continue; // the app dealt it a moment ago (unique couple + day)
