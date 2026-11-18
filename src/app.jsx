@@ -200,6 +200,8 @@ function seenReveal(id) { try { return localStorage.getItem(seenKey(id)) === "1"
 function markSeen(id) { try { localStorage.setItem(seenKey(id), "1"); } catch {} }
 
 const usedCards = data => [...data.rounds, ...(data.skipped || [])].map(r => r.lv + ":" + r.idx);
+// The levels of the cards you've had, newest first (rounds is already newest first, without skipped cards).
+const recentLevels = data => data.rounds.map(r => r.lv);
 const SKIPS_PER_DAY = 3;
 // Skips the two of you have used today, counted at your midnight like the daily card.
 const skipsLeft = data => SKIPS_PER_DAY - (data.skipped || []).filter(r => localDay(data.couple.time_zone, new Date(r.skipped_at)).day === localDay(data.couple.time_zone).day).length;
@@ -211,7 +213,7 @@ const isWriting = (data, round, userId) => (data.writing || []).some(w => w.roun
 
 // Every card is dealt by the database: it may swap the suggested deck card for a question from your pool.
 async function draw(data, me, day) {
-  const card = pickCard(usedCards(data));
+  const card = pickCard(usedCards(data), Math.random, { recent: recentLevels(data) });
   const { data: round, error } = await supabase.rpc("deal_card", { p_couple: data.member.couple_id, p_lv: card.lv, p_idx: card.idx, p_day: day || null });
   if (error) return null; // someone else dealt today's card a moment ago: the reload picks it up
   notify("drawn", round.id);
@@ -230,7 +232,7 @@ function SkipCard({ round, data, me, partner, reload, myDraft, onSkipped }) {
   const skip = async () => {
     if (myDraft && !window.confirm("Skip this card? What you've written for it will be thrown away.")) return;
     setBusy(true); setError("");
-    const card = pickCard(usedCards(data));
+    const card = pickCard(usedCards(data), Math.random, { recent: recentLevels(data) });
     const { data: fresh, error } = await supabase.rpc("skip_round", { p_round: round.id, p_lv: card.lv, p_idx: card.idx });
     setBusy(false);
     if (error) { setError(error.message); return reload(); }
