@@ -632,20 +632,34 @@ function TheirNote({ round, partner, notes }) {
 const OURS_FILTERS = [["all", "All"], ["saved", "Saved"], ["own", "Our questions"], ["deck", "From the deck"]];
 const FILTER_KEY = "closer:ours-filter";
 const readFilter = () => { try { const f = localStorage.getItem(FILTER_KEY); return OURS_FILTERS.some(([k]) => k === f) ? f : "all"; } catch { return "all"; } };
+// A second, optional filter by level, combined with the one above (e.g. Saved + Deeper).
+const LEVEL_FILTERS = [["all", "All levels"], ["know", "Know"], ["play", "Play"], ["world", "Worlds"], ["deep", "Deeper"], ["ahead", "Ahead"], ["wild", "Wild"]];
+const LEVEL_KEY = "closer:ours-level";
+const readLevel = () => { try { const f = localStorage.getItem(LEVEL_KEY); return LEVEL_FILTERS.some(([k]) => k === f) ? f : "all"; } catch { return "all"; } };
 
 function Ours({ me, data, partner, reload, onAnswer }) {
   const { rounds, answers, comments } = data;
   const [filter, setFilterState] = useState(readFilter);
   const setFilter = f => { setFilterState(f); try { localStorage.setItem(FILTER_KEY, f); } catch {} };
+  const [level, setLevelState] = useState(readLevel);
+  const setLevel = l => { setLevelState(l); try { localStorage.setItem(LEVEL_KEY, l); } catch {} };
   if (!rounds.length) return <p class="note">Your cards will collect here.</p>;
-  const shown = rounds.filter(r => filter === "all" || (filter === "saved" ? data.saved.has(r.id) : (filter === "own") === (r.lv === "own")));
+  const byKind = rounds.filter(r => filter === "all" || (filter === "saved" ? data.saved.has(r.id) : (filter === "own") === (r.lv === "own")));
+  // Your own questions have no level, so the level row is hidden for them and ignored.
+  const useLevel = filter !== "own" && level !== "all";
+  const shown = useLevel ? byKind.filter(r => r.lv === level) : byKind;
   const counts = { own: rounds.filter(r => r.lv === "own").length, saved: rounds.filter(r => data.saved.has(r.id)).length };
+  const levelCounts = Object.fromEntries(LEVEL_FILTERS.map(([k]) => [k, k === "all" ? 0 : byKind.filter(r => r.lv === k).length]));
   return <div class="history">
     <div class="chips" role="group" aria-label="Show">
       {OURS_FILTERS.map(([k, label]) => <button class="chip" aria-pressed={filter === k} onClick={() => setFilter(k)}>
         {label}{counts[k] > 0 && <span class="chip-count">{counts[k]}</span>}</button>)}
     </div>
-    {!shown.length && <p class="note">{filter === "own" ? "No questions of your own yet. Write one from Today." : filter === "saved" ? "Nothing saved yet. Tap ☆ Save on any card to keep it here." : "Nothing here yet."}</p>}
+    {filter !== "own" && <div class="chips chips-level" role="group" aria-label="Level">
+      {LEVEL_FILTERS.map(([k, label]) => <button class="chip chip-small" aria-pressed={level === k} onClick={() => setLevel(k)}>
+        {label}{levelCounts[k] > 0 && <span class="chip-num">{levelCounts[k]}</span>}</button>)}
+    </div>}
+    {!shown.length && <p class="note">{filter === "own" ? "No questions of your own yet. Write one from Today." : filter === "saved" ? "Nothing saved yet. Tap ☆ Save on any card to keep it here." : useLevel ? "No cards from this level here yet." : "Nothing here yet."}</p>}
     {shown.map(r => {
     const mine = answers.find(a => a.round_id === r.id && a.user_id === me.id);
     const theirs = partner && answers.find(a => a.round_id === r.id && a.user_id === partner.user_id);

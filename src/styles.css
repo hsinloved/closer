@@ -144,3 +144,9 @@ a { color: var(--accent-ink); }
 /* A note added under your own answer after the reveal: like a comment, but in the muted rule colour */
 .note-added { border-left-color: var(--muted); }
 .note-added .who { color: var(--muted); }
+
+/* Ours: the level row under the main filters, a little smaller */
+.chips-level { margin-top: calc(-1 * var(--s2)); }
+.chip-small { min-height: 34px; font-size: 14px; padding: 0 var(--s2); }
+.chip-num { font-size: 12px; color: var(--muted); }
+.chip[aria-pressed="true"] .chip-num { color: var(--accent-ink); }
